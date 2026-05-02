@@ -293,6 +293,11 @@ async def reply(body: ReplyBody):
         # Check if 3+ auto-replies in a row
         hist = conversations.get(body.conversation_id, [])
         recent = [t for t in hist[-6:] if t.get("from") == "merchant"]
+        if len(recent) >= 4:
+            return {
+                "action":    "end",
+                "rationale": "4 consecutive auto-replies — ending conversation to avoid spam"
+            }
         if len(recent) >= 3:
             return {
                 "action":       "wait",
