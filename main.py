@@ -131,7 +131,7 @@ async def push_context(request: Request):
 
     scope      = raw.get("scope", "")
     context_id = raw.get("context_id") or raw.get("id","")
-    version    = raw.get("version", 1)
+    version = raw.get("version", int(time.time()))
     payload    = raw.get("payload", raw)  # fallback: treat whole body as payload
 
     # Fallback: detect scope from payload shape
