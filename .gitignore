@@ -1,1 +1,5 @@
 .env
+judge_simulator.py
+.env
+__pycache__/
+*.pyc
