@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 
 # ── API setup ─────────────────────────────────────────────────────────
-GEMINI_API_KEY = "AIzaSyAC20UJS-TeCyTOQwozUkHe7wCikr8a6ow"  # replace this
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # replace this
 
 # ── Load categories once ──────────────────────────────────────────────
 def load_categories():

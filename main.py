@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from pydantic import BaseModel
 from typing import Any, Optional
 from dataset.bot import compose, CATEGORIES
+import re
 
 app = FastAPI()
 START = time.time()
@@ -293,6 +294,20 @@ async def reply(body: ReplyBody):
         # Check if 3+ auto-replies in a row
         hist = conversations.get(body.conversation_id, [])
         recent = [t for t in hist[-6:] if t.get("from") == "merchant"]
+        if len(recent) == 1:
+            return {
+                "action": "send",
+                "body": "Looks like an auto-reply 😊 When you're back, just reply 'Yes' and I’ll continue.",
+                "cta": "binary_yes_no",
+                "rationale": "Detected auto-reply, prompting real user"
+            }
+
+        if len(recent) == 2:
+            return {
+                "action": "wait",
+                "wait_seconds": 3600,
+                "rationale": "Second auto-reply detected — waiting 1 hour"
+            }
         if len(recent) >= 4:
             return {
                 "action":    "end",
@@ -313,6 +328,13 @@ async def reply(body: ReplyBody):
     # Normal reply → compose response
     merchant_id = body.merchant_id
     merchant = get_payload("merchant", merchant_id) if merchant_id else {}
+
+    if not merchant:
+        merchant = {}
+        
+    merchant.setdefault("identity", {"name": "Merchant"})
+    merchant.setdefault("category_slug", "restaurants")
+
     if not merchant:
         merchant = {
             "merchant_id":          merchant_id or "unknown",
@@ -361,10 +383,11 @@ async def reply(body: ReplyBody):
         "msg":  response_body,
         "at":   datetime.utcnow().isoformat()
     })
-
+    
+    response_body =re.sub(r'https?://\S+', '',response_body)
     return {
         "action":    "send",
-        "body":      response_body,
+        "body":      response_body.strip(),
         "cta":       result.get("cta", "open_ended") if "result" in dir() else "open_ended",
         "rationale": result.get("rationale", "") if "result" in dir() else ""
     }
