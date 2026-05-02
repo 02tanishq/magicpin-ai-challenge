@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-import json, os, time
+from dataset.bot import compose, load_json_list, CATEGORIES
 from datetime import datetime
-from bot import compose, load_json_list, CATEGORIES
+from database.bot import compose, load_json_list, CATEGORIES
 
 app = FastAPI()
 
@@ -16,7 +16,7 @@ STATE = {
 }
 
 # ── Load expanded data on startup ────────────────────────────────────
-script_dir = os.path.dirname(os.path.abspath(__file__))
+script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
 
 def get_path(filename):
     for base in ["expanded", "."]:
