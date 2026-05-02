@@ -9,9 +9,6 @@ import os
 import time
 import requests
 from datetime import datetime
-from dotenv import load_dotenv
-
-load_dotenv()
 
 # ── API setup ─────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
