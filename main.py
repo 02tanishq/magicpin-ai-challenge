@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from dataset.bot import compose, load_json_list, CATEGORIES
 from datetime import datetime
-from database.bot import compose, load_json_list, CATEGORIES
+
 
 app = FastAPI()
 
