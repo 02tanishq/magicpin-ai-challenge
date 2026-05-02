@@ -1,226 +1,372 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-from dataset.bot import compose, load_json_list, CATEGORIES
-from datetime import datetime
 import os
 import json
 import time
+import uuid
+from datetime import datetime
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
+from typing import Any, Optional
+from dataset.bot import compose, CATEGORIES
 
 app = FastAPI()
+START = time.time()
 
-# ── In-memory state ───────────────────────────────────────────────────
-STATE = {
-    "categories": {},
-    "merchants": {},
-    "customers": {},
-    "tick_count": 0,
-    "actions_log": []
-}
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# ── Load expanded data on startup ────────────────────────────────────
-script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
+# ── In-memory stores ──────────────────────────────────────────────────
+contexts: dict[tuple, dict] = {}       # (scope, context_id) -> {version, payload}
+conversations: dict[str, list] = {}   # conversation_id -> [turns]
 
-def get_path(filename):
+# ── Helpers ───────────────────────────────────────────────────────────
+def get_payload(scope, context_id):
+    return contexts.get((scope, context_id), {}).get("payload")
+
+def all_payloads(scope):
+    return {cid: v["payload"] for (s, cid), v in contexts.items() if s == scope}
+
+# ── Load base dataset on startup ──────────────────────────────────────
+def load_base_dataset():
+    script_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
     for base in ["expanded", "."]:
-        p = os.path.join(script_dir, base, filename)
-        if os.path.exists(p):
-            return p
-    return None
-
-def load_state():
-    # Merchants
-    p = get_path("merchants.json") or get_path("merchants_seed.json")
-    if p:
-        for m in load_json_list(p):
-            STATE["merchants"][m["merchant_id"]] = m
-
-    # Customers
-    p = get_path("customers.json") or get_path("customers_seed.json")
-    if p:
-        for c in load_json_list(p):
-            STATE["customers"][c.get("customer_id", c.get("id", ""))] = c
-
-    # Categories
-    for cat_dir in ["expanded/categories", "categories"]:
-        full = os.path.join(script_dir, cat_dir)
-        if os.path.exists(full):
-            for fname in os.listdir(full):
+        cat_dir = os.path.join(script_dir, base, "categories")
+        if os.path.exists(cat_dir):
+            for fname in os.listdir(cat_dir):
                 if fname.endswith(".json"):
-                    key = fname.replace(".json", "")
-                    with open(os.path.join(full, fname)) as f:
-                        STATE["categories"][key] = json.load(f)
-                        CATEGORIES[key] = STATE["categories"][key]
+                    slug = fname.replace(".json", "")
+                    with open(os.path.join(cat_dir, fname)) as f:
+                        payload = json.load(f)
+                    contexts[("category", slug)] = {"version": 0, "payload": payload}
+                    CATEGORIES[slug] = payload
             break
 
-load_state()
-print(f"Loaded {len(STATE['merchants'])} merchants, "
-      f"{len(STATE['customers'])} customers, "
-      f"{len(STATE['categories'])} categories")
+    def load_list(path):
+        with open(path) as f:
+            raw = json.load(f)
+        if isinstance(raw, list):
+            return raw
+        for v in raw.values():
+            if isinstance(v, list):
+                return v
+        return [raw]
 
-# ── Endpoints ─────────────────────────────────────────────────────────
+    script_dir2 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
+    for base in ["expanded", "."]:
+        mp = os.path.join(script_dir2, base, "merchants.json")
+        if not os.path.exists(mp):
+            mp = os.path.join(script_dir2, "merchants_seed.json")
+        if os.path.exists(mp):
+            for m in load_list(mp):
+                mid = m.get("merchant_id", "")
+                if mid:
+                    contexts[("merchant", mid)] = {"version": 0, "payload": m}
+            break
 
+    for base in ["expanded", "."]:
+        cp = os.path.join(script_dir2, base, "customers.json")
+        if not os.path.exists(cp):
+            cp = os.path.join(script_dir2, "customers_seed.json")
+        if os.path.exists(cp):
+            for c in load_list(cp):
+                cid = c.get("customer_id", c.get("id", ""))
+                if cid:
+                    contexts[("customer", cid)] = {"version": 0, "payload": c}
+            break
+
+    for base in ["expanded", "."]:
+        tp = os.path.join(script_dir2, base, "triggers.json")
+        if not os.path.exists(tp):
+            tp = os.path.join(script_dir2, "triggers_seed.json")
+        if os.path.exists(tp):
+            for t in load_list(tp):
+                tid = t.get("id", "")
+                if tid:
+                    contexts[("trigger", tid)] = {"version": 0, "payload": t}
+            break
+
+load_base_dataset()
+counts = {s: sum(1 for (sc,_) in contexts if sc==s) for s in ["category","merchant","customer","trigger"]}
+print(f"Loaded: {counts}")
+
+# ── 1. GET /v1/healthz ────────────────────────────────────────────────
+@app.get("/v1/healthz")
 @app.get("/healthz")
-def healthz():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
-
-
-@app.get("/metadata")
-def metadata():
-    return {
-        "bot_name": "Vera-Enhanced",
-        "version": "1.0.0",
-        "author": "Team Tanishq",
-        "model": "gemini-2.5-flash",
-        "description": "Context-aware merchant growth assistant using 4-context compose framework",
-        "capabilities": [
-            "research_digest", "perf_spike", "perf_dip",
-            "recall_due", "festival_upcoming", "regulation_change",
-            "dormant_with_vera", "review_theme_emerged",
-            "customer_lapsed_soft", "auto_reply_detection",
-            "hinglish_support", "multi_trigger_routing"
-        ]
-    }
-
-
-@app.post("/context")
-async def context(request: Request):
-    body = await request.json()
-
-    # Accept category, merchant, customer updates
-    if "categories" in body:
-        for cat in body["categories"]:
-            slug = cat.get("slug", cat.get("category_slug", ""))
-            if slug:
-                STATE["categories"][slug] = cat
-                CATEGORIES[slug] = cat
-
-    if "merchants" in body:
-        for m in body["merchants"]:
-            mid = m.get("merchant_id", "")
-            if mid:
-                STATE["merchants"][mid] = m
-
-    if "customers" in body:
-        for c in body["customers"]:
-            cid = c.get("customer_id", c.get("id", ""))
-            if cid:
-                STATE["customers"][cid] = c
-
+async def healthz():
+    counts = {s: sum(1 for (sc,_) in contexts if sc==s)
+              for s in ["category","merchant","customer","trigger"]}
     return {
         "status": "ok",
-        "loaded": {
-            "categories": len(STATE["categories"]),
-            "merchants": len(STATE["merchants"]),
-            "customers": len(STATE["customers"])
-        }
+        "uptime_seconds": int(time.time() - START),
+        "contexts_loaded": counts
     }
 
+# ── 2. GET /v1/metadata ───────────────────────────────────────────────
+@app.get("/v1/metadata")
+@app.get("/metadata")
+async def metadata():
+    return {
+        "team_name":    "Team Tanishq",
+        "team_members": ["Tanishq"],
+        "model":        "gemini-2.5-flash",
+        "approach":     "4-context composer with trigger routing, Hinglish support, anti-repetition, auto-reply detection",
+        "contact_email":"tanishq@example.com",
+        "version":      "2.0.0",
+        "submitted_at": "2026-05-03T00:00:00Z"
+    }
 
-@app.post("/tick")
-async def tick(request: Request):
-    body = await request.json()
-    STATE["tick_count"] += 1
+# ── 3. POST /v1/context ───────────────────────────────────────────────
+class CtxBody(BaseModel):
+    scope: str
+    context_id: str
+    version: int
+    payload: dict[str, Any]
+    delivered_at: str = ""
 
-    # Update context if provided
-    if "merchants" in body:
-        for m in body["merchants"]:
-            mid = m.get("merchant_id", "")
-            if mid:
-                STATE["merchants"][mid] = m
+@app.post("/v1/context")
+@app.post("/context")
+async def push_context(request: Request):
+    try:
+        raw = await request.json()
+    except:
+        return {"accepted": False, "reason": "invalid_json"}
 
-    if "triggers" not in body:
-        return {"actions": [], "tick": STATE["tick_count"]}
+    scope      = raw.get("scope", "")
+    context_id = raw.get("context_id", "")
+    version    = raw.get("version", 1)
+    payload    = raw.get("payload", raw)  # fallback: treat whole body as payload
 
-    triggers = body["triggers"]
-    actions = []
+    # Fallback: detect scope from payload shape
+    if not scope:
+        if "merchant_id" in payload:
+            scope = "merchant"
+            context_id = context_id or payload.get("merchant_id","")
+        elif "customer_id" in payload:
+            scope = "customer"
+            context_id = context_id or payload.get("customer_id","")
+        elif "slug" in payload:
+            scope = "category"
+            context_id = context_id or payload.get("slug","")
+        elif "kind" in payload:
+            scope = "trigger"
+            context_id = context_id or payload.get("id","")
 
-    for trigger in triggers[:20]:  # max 20 actions per tick
-        try:
-            merchant_id = trigger.get("merchant_id")
-            customer_id = trigger.get("customer_id")
+    if not scope or not context_id:
+        return {"accepted": False, "reason": "missing_scope_or_id"}
 
-            merchant = STATE["merchants"].get(merchant_id)
-            if not merchant:
-                continue
+    key = (scope, context_id)
+    cur = contexts.get(key)
+    if cur and cur["version"] >= version:
+        return {"accepted": False, "reason": "stale_version", "current_version": cur["version"]}
 
-            category_slug = merchant.get("category_slug", "dentists")
-            category = STATE["categories"].get(
-                category_slug,
-                {"slug": category_slug}
-            )
-            if "slug" not in category:
-                category["slug"] = category_slug
+    contexts[key] = {"version": version, "payload": payload}
 
-            customer = None
-            if customer_id:
-                customer = STATE["customers"].get(customer_id)
-
-            result = compose(category, merchant, trigger, customer)
-
-            actions.append({
-                "trigger_id":       trigger.get("id", ""),
-                "merchant_id":      merchant_id,
-                "customer_id":      customer_id,
-                "message":          result["message"],
-                "cta":              result["cta"],
-                "send_as_identity": result["send_as_identity"],
-                "suppression_key":  result["suppression_key"],
-                "rationale":        result["rationale"],
-                "timestamp":        datetime.utcnow().isoformat()
-            })
-
-            STATE["actions_log"].append(actions[-1])
-            time.sleep(1)  # gentle rate limiting
-
-        except Exception as e:
-            print(f"Error on trigger {trigger.get('id')}: {e}")
-            continue
+    # Sync categories to CATEGORIES global
+    if scope == "category":
+        CATEGORIES[context_id] = payload
+        slug = payload.get("slug", context_id)
+        CATEGORIES[slug] = payload
 
     return {
-        "actions": actions,
-        "tick": STATE["tick_count"],
-        "total_actions_so_far": len(STATE["actions_log"])
+        "accepted":  True,
+        "ack_id":    f"ack_{context_id}_v{version}",
+        "stored_at": datetime.utcnow().isoformat() + "Z"
     }
 
+# ── 4. POST /v1/tick ──────────────────────────────────────────────────
+class TickBody(BaseModel):
+    now: str = ""
+    available_triggers: list[str] = []
 
+@app.post("/v1/tick")
+@app.post("/tick")
+async def tick(body: TickBody):
+    actions = []
+    used_merchants = set()
+
+    for trg_id in body.available_triggers[:20]:
+        trg = get_payload("trigger", trg_id)
+        if not trg:
+            continue
+
+        merchant_id = trg.get("merchant_id")
+        if not merchant_id or merchant_id in used_merchants:
+            continue
+
+        merchant = get_payload("merchant", merchant_id)
+        if not merchant:
+            continue
+
+        category_slug = merchant.get("category_slug", "")
+        category = get_payload("category", category_slug) or {"slug": category_slug}
+        if "slug" not in category:
+            category["slug"] = category_slug
+
+        customer_id = trg.get("customer_id")
+        customer = get_payload("customer", customer_id) if customer_id else None
+
+        try:
+            result = compose(category, merchant, trg, customer)
+            if not result.get("message"):
+                continue
+
+            conv_id = f"conv_{merchant_id}_{trg_id}_{int(time.time())}"
+            conversations[conv_id] = [{
+                "from": "vera",
+                "msg":  result["message"],
+                "at":   datetime.utcnow().isoformat()
+            }]
+
+            actions.append({
+                "conversation_id": conv_id,
+                "merchant_id":     merchant_id,
+                "customer_id":     customer_id,
+                "send_as":         result.get("send_as_identity", "vera"),
+                "trigger_id":      trg_id,
+                "template_name":   f"vera_{trg.get('kind','generic')}_v2",
+                "template_params": [
+                    merchant.get("identity", {}).get("name", "Merchant"),
+                    trg.get("kind", ""),
+                    result["message"][:80]
+                ],
+                "body":            result["message"],
+                "cta":             result.get("cta", "open_ended"),
+                "suppression_key": result.get("suppression_key", trg.get("suppression_key", "")),
+                "rationale":       result.get("rationale", "")
+            })
+
+            used_merchants.add(merchant_id)
+            time.sleep(0.5)
+
+        except Exception as e:
+            print(f"Tick error for {trg_id}: {e}")
+            continue
+
+    return {"actions": actions}
+
+# ── 5. POST /v1/reply ─────────────────────────────────────────────────
+class ReplyBody(BaseModel):
+    conversation_id: str
+    merchant_id: Optional[str] = None
+    customer_id: Optional[str] = None
+    from_role: str = "merchant"
+    message: str = ""
+    received_at: str = ""
+    turn_number: int = 1
+
+@app.post("/v1/reply")
 @app.post("/reply")
-async def reply(request: Request):
-    body = await request.json()
+async def reply(body: ReplyBody):
+    msg = body.message.lower().strip()
 
-    merchant_id = body.get("merchant_id")
-    customer_id = body.get("customer_id")
-    message     = body.get("message", "")
-    trigger     = body.get("trigger", {
-        "id": "reply_trigger",
-        "kind": "merchant_reply",
-        "scope": "merchant",
-        "urgency": 3,
-        "suppression_key": f"{merchant_id}:reply:{int(time.time())}"
+    # Log the turn
+    conversations.setdefault(body.conversation_id, []).append({
+        "from": body.from_role,
+        "msg":  body.message,
+        "at":   datetime.utcnow().isoformat()
     })
 
-    merchant = STATE["merchants"].get(merchant_id, {})
-    category_slug = merchant.get("category_slug", "dentists")
-    category = STATE["categories"].get(category_slug, {"slug": category_slug})
+    # Hostile detection → end conversation
+    hostile = ["stop", "spam", "useless", "don't message", "mat bhejo",
+               "band karo", "not interested", "remove me", "unsubscribe"]
+    if any(p in msg for p in hostile):
+        return {
+            "action":    "end",
+            "rationale": "Merchant signaled not interested — gracefully exiting"
+        }
+
+    # Intent to proceed → send action message
+    intent_yes = ["ok lets do it", "yes", "haan", "go ahead", "start",
+                  "karo", "let's do", "whats next", "next", "sure", "sounds good",
+                  "send it", "bhejo", "theek hai"]
+    if any(p in msg for p in intent_yes):
+        return {
+            "action":    "send",
+            "body":      "Setting this up for you right now — I'll send a confirmation once it's live. Should take less than 2 minutes. ✅",
+            "cta":       "open_ended",
+            "rationale": "Merchant confirmed intent — routing to action mode immediately"
+        }
+
+    # Auto-reply detection → wait
+    auto_reply_phrases = ["thank you for contacting", "thanks for contacting",
+                          "we will get back", "we'll get back", "our team will",
+                          "please leave a message", "currently unavailable"]
+    if any(p in msg for p in auto_reply_phrases):
+        # Check if 3+ auto-replies in a row
+        hist = conversations.get(body.conversation_id, [])
+        recent = [t for t in hist[-6:] if t.get("from") == "merchant"]
+        if len(recent) >= 3:
+            return {
+                "action":       "wait",
+                "wait_seconds": 3600,
+                "rationale":    "3+ consecutive auto-replies detected — backing off 1 hour"
+            }
+        return {
+            "action":       "wait",
+            "wait_seconds": 300,
+            "rationale":    "Auto-reply detected — waiting 5 min before retry"
+        }
+
+    # Normal reply → compose response
+    merchant_id = body.merchant_id
+    merchant = get_payload("merchant", merchant_id) if merchant_id else {}
+    if not merchant:
+        merchant = {
+            "merchant_id":          merchant_id or "unknown",
+            "category_slug":        "restaurants",
+            "identity":             {"name": "Merchant", "locality": "your area"},
+            "performance":          {"views": 0, "calls": 0},
+            "offers":               [],
+            "conversation_history": [],
+            "customer_aggregate":   {},
+            "signals":              [],
+            "review_themes":        [],
+            "subscription":         {}
+        }
+
+    category_slug = merchant.get("category_slug", "restaurants")
+    category = get_payload("category", category_slug) or {"slug": category_slug}
     if "slug" not in category:
         category["slug"] = category_slug
 
-    customer = STATE["customers"].get(customer_id) if customer_id else None
+    customer = get_payload("customer", body.customer_id) if body.customer_id else None
 
-    # Add reply to conversation history
-    if merchant:
-        hist = merchant.setdefault("conversation_history", [])
-        hist.append({
-            "role": "merchant",
-            "message": message,
-            "timestamp": datetime.utcnow().isoformat()
-        })
+    trigger = {
+        "id":             f"reply_{body.conversation_id}",
+        "kind":           "merchant_reply",
+        "scope":          "merchant",
+        "urgency":        3,
+        "suppression_key": f"{merchant_id}:reply:{body.turn_number}",
+        "payload":        {}
+    }
 
-    result = compose(category, merchant, trigger, customer)
+    # Add conversation history to merchant
+    merchant["conversation_history"] = conversations.get(body.conversation_id, [])
+
+    try:
+        result = compose(category, merchant, trigger, customer)
+        response_body = result.get("message", "")
+    except Exception as e:
+        print(f"Reply compose error: {e}")
+        response_body = "Thanks for your reply! I'll follow up with something useful shortly."
+
+    if not response_body:
+        response_body = "Got it! Let me put something together for you."
+
+    conversations[body.conversation_id].append({
+        "from": "vera",
+        "msg":  response_body,
+        "at":   datetime.utcnow().isoformat()
+    })
 
     return {
-        "message":          result["message"],
-        "cta":              result["cta"],
-        "send_as_identity": result["send_as_identity"],
-        "suppression_key":  result["suppression_key"],
-        "rationale":        result["rationale"]
+        "action":    "send",
+        "body":      response_body,
+        "cta":       result.get("cta", "open_ended") if "result" in dir() else "open_ended",
+        "rationale": result.get("rationale", "") if "result" in dir() else ""
     }
+
+# ── Optional teardown ─────────────────────────────────────────────────
+@app.post("/v1/teardown")
+async def teardown():
+    contexts.clear()
+    conversations.clear()
+    return {"status": "wiped"}
