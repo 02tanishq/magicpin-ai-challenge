@@ -130,7 +130,7 @@ async def push_context(request: Request):
         return {"accepted": False, "reason": "invalid_json"}
 
     scope      = raw.get("scope", "")
-    context_id = raw.get("context_id") or raw.get("id","")
+    context_id = raw.get("context_id", "")
     version    = raw.get("version", 1)
     payload    = raw.get("payload", raw)  # fallback: treat whole body as payload
 
