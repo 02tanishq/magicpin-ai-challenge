@@ -1,28 +1,82 @@
+"""
+Vera — magicpin AI Challenge
+bot.py: The compose() engine + all helpers
+Optimized against the 10 case studies in examples/case-studies.md
+"""
+
 import json
 import os
-import requests
 import time
+import requests
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── API setup ─────────────────────────────────────────────────────────
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")  # replace this
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
-# ── Load categories once ──────────────────────────────────────────────
+# ── Category voice rules ──────────────────────────────────────────────
+# Derived from case studies — what the judge scores on
+CATEGORY_VOICE = {
+    "dentists": {
+        "tone": "peer_clinical — write like a smart fellow dentist, not a salesperson",
+        "vocab": ["fluoride varnish", "caries", "recall window", "high-risk cohort", "scaling", "OPG"],
+        "taboos": ["guaranteed", "100% safe", "completely cure", "miracle", "best in city", "amazing"],
+        "emoji": "🦷",
+        "register": "Dr. {owner} — use full title for dentists"
+    },
+    "restaurants": {
+        "tone": "visual and FOMO-driven — make them hungry, create urgency",
+        "vocab": ["covers", "AOV", "footfall", "table turns", "delivery", "dine-in"],
+        "taboos": ["yummy", "delicious food", "best taste", "cheapest"],
+        "emoji": "🍽️",
+        "register": "{owner} — first name only"
+    },
+    "salons": {
+        "tone": "warm-practical — fellow operator, aspirational but grounded",
+        "vocab": ["retail", "rebooking", "client retention", "chair utilization", "keratin", "bridal"],
+        "taboos": ["cheapest", "discount", "amazing results"],
+        "emoji": "💇",
+        "register": "{owner} — first name only"
+    },
+    "gyms": {
+        "tone": "coach-to-operator — data-driven, no hype, peer benchmark aware",
+        "vocab": ["active members", "churn", "ad spend", "conversion", "HIIT", "attendance"],
+        "taboos": ["guaranteed results", "best gym", "amazing transformation"],
+        "emoji": "💪",
+        "register": "{owner} — first name only"
+    },
+    "pharmacies": {
+        "tone": "trustworthy-precise — clinical accuracy, respectful, no alarm",
+        "vocab": ["chronic-Rx", "dispensed", "batch", "sub-potency", "compliance", "refill"],
+        "taboos": ["cheapest medicines", "miracle cure", "guaranteed health"],
+        "emoji": "💊",
+        "register": "{owner} — first name only"
+    }
+}
+
+# ── Load categories ───────────────────────────────────────────────────
 def load_categories():
     cats = {}
-    for cat_dir in ["expanded/categories", "categories"]:
+    for cat_dir in [
+        "expanded/categories",
+        "categories",
+        os.path.join(os.path.dirname(__file__), "expanded/categories"),
+        os.path.join(os.path.dirname(__file__), "categories"),
+    ]:
         if os.path.exists(cat_dir):
             for fname in os.listdir(cat_dir):
                 if fname.endswith(".json"):
                     key = fname.replace(".json", "")
                     with open(os.path.join(cat_dir, fname)) as f:
                         cats[key] = json.load(f)
-            break  # use first found
+            break
     return cats
 
 CATEGORIES = load_categories()
 
-# ── Helper: load json as list ─────────────────────────────────────────
+# ── Load json list helper ─────────────────────────────────────────────
 def load_json_list(filepath):
     with open(filepath) as f:
         raw = json.load(f)
@@ -34,325 +88,404 @@ def load_json_list(filepath):
                 return v
     return [raw]
 
-# ── Helper: detect auto-reply ─────────────────────────────────────────
+# ── Auto-reply detection ──────────────────────────────────────────────
 AUTO_REPLY_PHRASES = [
-    "thank you for contacting",
-    "thanks for contacting",
-    "we will get back",
-    "we'll get back",
-    "our team will",
-    "please leave a message",
-    "currently unavailable",
-    "out of office",
-    "dhanyavaad",
-    "shukriya",
+    "thank you for contacting", "thanks for contacting",
+    "we will get back", "we'll get back", "our team will",
+    "please leave a message", "currently unavailable", "out of office",
+    "dhanyavaad", "shukriya", "automated response", "auto reply"
 ]
 
 def is_auto_reply(message: str) -> bool:
     if not message:
         return False
-    msg_lower = message.lower()
-    return any(phrase in msg_lower for phrase in AUTO_REPLY_PHRASES)
+    return any(p in message.lower() for p in AUTO_REPLY_PHRASES)
 
-# ── Helper: detect merchant intent ───────────────────────────────────
-INTENT_JOIN = ["join", "judrna", "judna", "sign up", "register",
-               "interested", "yes", "haan", "ha ", "let's do", "go ahead",
-               "start", "shuru", "karo", "ok", "okay"]
+# ── Language detection ────────────────────────────────────────────────
+def get_language_instruction(merchant, customer=None):
+    # Check customer preference first
+    if customer:
+        lang = customer.get("preferences", {}).get("language", "")
+        if lang == "hi":
+            return "Use natural Hindi-English mix (Hinglish). E.g. 'Apke liye 2 slots ready hain'"
+    # Check merchant identity
+    identity = merchant.get("identity", {})
+    languages = identity.get("languages", ["en"])
+    if "hi" in languages:
+        return "Use natural Hindi-English mix (Hinglish) — blend smoothly, not forced"
+    return "Write in clear English"
 
-def detect_intent(message: str) -> str:
-    if not message:
-        return "unknown"
-    msg_lower = message.lower()
-    if any(phrase in msg_lower for phrase in INTENT_JOIN):
-        return "join"
-    if any(phrase in msg_lower for phrase in ["stop", "no", "nahi", "band", "not interested"]):
-        return "stop"
-    return "unknown"
-
-# ── Helper: get best offer ────────────────────────────────────────────
+# ── Get best offer ────────────────────────────────────────────────────
 def pick_best_offer(merchant, trigger_kind, category_slug):
     offers = merchant.get("offers", [])
+
     if offers:
-        if trigger_kind in ("perf_dip", "recall_due", "customer_lapsed_soft"):
-            discounted = [o for o in offers
-                         if o.get("discounted_price") or o.get("discount_pct")]
+        # For dip/recall prefer discounted offers
+        if trigger_kind in ("perf_dip", "performance_dip", "recall_due",
+                            "customer_lapsed_soft", "customer_lapsed_hard"):
+            discounted = [o for o in offers if
+                          o.get("discounted_price") or o.get("discount_pct") or
+                          o.get("value") or "@" in str(o.get("title", ""))]
             if discounted:
                 return discounted[0]
         return offers[0]
 
-    fallbacks = {
-        "dentists":    {"name": "Dental Cleaning",       "discounted_price": 299},
-        "restaurants": {"name": "Special Thali",         "discounted_price": 199},
-        "salons":      {"name": "Haircut & Styling",     "discounted_price": 349},
-        "gyms":        {"name": "Monthly Membership",    "discounted_price": 999},
-        "pharmacies":  {"name": "Health Checkup Package","discounted_price": 499},
-    }
-    return fallbacks.get(category_slug,
-                         {"name": "Special Offer", "discounted_price": 299})
-
-# ── Helper: get peer stats from category ─────────────────────────────
-def get_peer_stats(category_slug):
+    # Category catalog fallback
     cat = CATEGORIES.get(category_slug, {})
-    return cat.get("peer_stats", {
-        "avg_rating": 4.4,
-        "avg_reviews": 62,
-        "avg_ctr": 0.030
-    })
+    catalog = cat.get("offer_catalog", cat.get("offers", []))
+    if catalog:
+        return catalog[0]
 
-# ── Helper: get digest item from category ────────────────────────────
-def get_top_digest(category_slug):
+    # Hardcoded last resort
+    fallbacks = {
+        "dentists":    {"title": "Dental Cleaning @ ₹299",      "value": "299"},
+        "restaurants": {"title": "Special Thali @ ₹199",        "value": "199"},
+        "salons":      {"title": "Haircut & Styling @ ₹349",    "value": "349"},
+        "gyms":        {"title": "Monthly Membership @ ₹999",   "value": "999"},
+        "pharmacies":  {"title": "Health Checkup Package @ ₹499", "value": "499"},
+    }
+    return fallbacks.get(category_slug, {"title": "Special Offer @ ₹299", "value": "299"})
+
+def offer_name(offer):
+    """Extract clean name from offer."""
+    title = offer.get("name", offer.get("title", offer.get("service_name", "")))
+    if "@" in title:
+        return title.split("@")[0].strip()
+    return title or "Special Offer"
+
+def offer_price(offer):
+    """Extract price from offer."""
+    price = offer.get("discounted_price", offer.get("price",
+            offer.get("value", "")))
+    if not price and "@" in str(offer.get("title", "")):
+        raw = offer.get("title", "").split("@")[-1].strip()
+        price = raw.replace("₹", "").strip().split()[0]
+    return str(price) if price else ""
+
+# ── Get digest item ───────────────────────────────────────────────────
+def get_digest_item(category_slug, top_item_id=None):
+    """Get best matching digest item from category."""
     cat = CATEGORIES.get(category_slug, {})
     digest = cat.get("digest", [])
-    if digest:
-        return digest[0]
-    return None
+    if not digest:
+        return None
+    if top_item_id:
+        for d in digest:
+            if d.get("id") == top_item_id:
+                return d
+    return digest[0]
 
-# ── Helper: get seasonal beat ────────────────────────────────────────
-def get_seasonal_beat(category_slug):
+# ── Get peer stats ────────────────────────────────────────────────────
+def get_peer_stats(category_slug):
     cat = CATEGORIES.get(category_slug, {})
-    beats = cat.get("seasonal_beats", [])
-    now_month = datetime.now().month
-    for beat in beats:
-        months_str = beat.get("months", beat.get("month", ""))
-        if str(now_month) in str(months_str):
-            return beat
-    return beats[0] if beats else None
+    return cat.get("peer_stats", {"avg_ctr": 0.030, "avg_rating": 4.4})
 
-# ── Helper: clean item ID to readable text ───────────────────────────
+# ── Clean item ID ─────────────────────────────────────────────────────
 def clean_item_id(item_id: str) -> str:
     parts = item_id.split("_")
     if len(parts) > 2:
         return " ".join(parts[2:]).replace("-", " ").title()
     return item_id.replace("_", " ").replace("-", " ").title()
 
-# ── Helper: detect language preference ──────────────────────────────
-def get_language_instruction(merchant):
-    identity = merchant.get("identity", {})
-    languages = identity.get("languages", ["en"])
-    if "hi" in languages and "en" in languages:
-        return "Use a natural Hindi-English mix (Hinglish). Example: 'Dr. Meera, JIDA ka Oct issue aaya — aapke high-risk patients ke liye ek important finding hai.'"
-    elif "hi" in languages:
-        return "Write primarily in Hindi with key terms in English."
-    else:
-        return "Write in clear English."
-
-# ── Build rich context string for LLM ───────────────────────────────
+# ── Build the rich context block for LLM ─────────────────────────────
 def build_context_block(category_slug, merchant, trigger, customer=None):
-    identity   = merchant.get("identity", {})
-    perf       = merchant.get("performance", {})
-    delta      = perf.get("delta_7d", {})
-    subs       = merchant.get("subscription", {})
-    signals    = merchant.get("signals", [])
-    reviews    = merchant.get("review_themes", [])
-    cust_agg   = merchant.get("customer_aggregate", {})
-    conv_hist  = merchant.get("conversation_history", [])
-    peer_stats = get_peer_stats(category_slug)
-    digest     = get_top_digest(category_slug)
-    seasonal   = get_seasonal_beat(category_slug)
-    payload    = trigger.get("payload", {})
+    identity  = merchant.get("identity", {})
+    perf      = merchant.get("performance", {})
+    delta     = perf.get("delta_7d", {})
+    subs      = merchant.get("subscription", {})
+    signals   = merchant.get("signals", [])
+    reviews   = merchant.get("review_themes", [])
+    cust_agg  = merchant.get("customer_aggregate", {})
+    conv_hist = merchant.get("conversation_history", [])
+    payload   = trigger.get("payload", {})
 
-    # Performance comparison with peers
-    merchant_ctr  = perf.get("ctr", 0)
-    peer_ctr      = peer_stats.get("avg_ctr", 0.030)
-    ctr_vs_peer   = round((merchant_ctr - peer_ctr) * 100, 1)
-    ctr_note      = (f"CTR {merchant_ctr:.1%} is {abs(ctr_vs_peer):.1f}pp "
-                     f"{'above' if ctr_vs_peer >= 0 else 'below'} peer median {peer_ctr:.1%}")
+    # Peer comparison
+    peer      = get_peer_stats(category_slug)
+    m_ctr     = perf.get("ctr", 0)
+    p_ctr     = peer.get("avg_ctr", 0.030)
+    ctr_diff  = round((m_ctr - p_ctr) * 100, 1)
+    ctr_note  = (f"CTR {m_ctr:.1%} — {abs(ctr_diff):.1f}pp "
+                 f"{'above' if ctr_diff >= 0 else 'BELOW'} peer median {p_ctr:.1%}")
 
-    # Recent conversation — anti-repetition
-    last_messages = [turn.get("message", "") for turn in conv_hist[-3:]] if conv_hist else []
-    last_msg_str  = " | ".join(last_messages) if last_messages else "none"
+    # Digest
+    top_item_id = payload.get("top_item_id", "")
+    digest = get_digest_item(category_slug, top_item_id)
+    digest_block = ""
+    if digest:
+        digest_block = f"""
+DIGEST ITEM (use this as the hook — cite source + numbers):
+- Title: {digest.get('title', digest.get('headline', ''))}
+- Source: {digest.get('source', 'JIDA')}
+- Trial N: {digest.get('trial_n', '')}
+- Patient segment: {digest.get('patient_segment', '')}
+- Summary: {digest.get('summary', '')}
+- Key stat: {digest.get('key_stat', '')}"""
 
-    # Signals summary
+    # Signals
     signals_str = ", ".join(
         s.get("kind", s) if isinstance(s, dict) else str(s)
         for s in signals
     ) or "none"
 
-    # Review themes
-    review_str = ", ".join(
-        r.get("theme", r) if isinstance(r, dict) else str(r)
-        for r in reviews[:3]
-    ) or "none"
+    # Anti-repetition
+    last_msgs = [t.get("msg", t.get("message", "")) for t in conv_hist[-3:]]
+    last_str  = " | ".join(last_msgs) if last_msgs else "none"
 
-    # Customer context
-    cust_str = ""
+    # Customer block
+    cust_block = ""
     if customer:
         rel   = customer.get("relationship", {})
         prefs = customer.get("preferences", {})
-        cust_str = f"""
-CUSTOMER:
-- Name: {customer.get('name', customer.get('first_name', 'Customer'))}
-- State: {customer.get('state', 'unknown')}
+        state = customer.get("state", "unknown")
+        cname = customer.get("name", customer.get("first_name", "Customer"))
+        cust_block = f"""
+CUSTOMER (message goes TO this person):
+- Name: {cname}
+- State: {state}
 - Visits total: {rel.get('visits_total', 'N/A')}
 - Last visit: {rel.get('last_visit', 'N/A')}
-- Preferred slot: {prefs.get('preferred_slots', 'any')}
+- Services received: {rel.get('services_received', [])}
+- Preferred slot: {prefs.get('preferred_slots', 'weekday_evening')}
 - Channel: {prefs.get('channel', 'whatsapp')}
-- Language: {prefs.get('language', 'en')}
+- Language preference: {prefs.get('language', 'en')}
 - Consent scope: {customer.get('consent', {}).get('scope', [])}"""
-
-    # Digest item
-    digest_str = ""
-    if digest:
-        digest_str = f"""
-TOP DIGEST ITEM:
-- Headline: {digest.get('headline', digest.get('title', 'N/A'))}
-- Source: {digest.get('source', 'N/A')}
-- Key stat: {digest.get('key_stat', digest.get('summary', 'N/A'))}
-- Relevance: {digest.get('relevance', 'high')}"""
-
-    # Seasonal beat
-    seasonal_str = ""
-    if seasonal:
-        seasonal_str = f"\nSEASONAL NOTE: {seasonal.get('note', seasonal.get('beat', ''))}"
-
-    # Trigger payload
-    trigger_kind = trigger.get("kind", "")
-    top_item_raw = payload.get("top_item_id", payload.get("top_item", ""))
-    top_item     = clean_item_id(top_item_raw) if top_item_raw else ""
 
     return f"""
 MERCHANT:
 - Name: {identity.get('name', 'Merchant')}
-- Owner: {identity.get('owner_first_name', 'there')}
-- City/Locality: {identity.get('locality', '')}, {identity.get('city', '')}
+- Owner first name: {identity.get('owner_first_name', '')}
+- City / Locality: {identity.get('locality', '')}, {identity.get('city', '')}
 - Verified: {identity.get('verified', False)}
+- Languages: {identity.get('languages', ['en'])}
 - Subscription: {subs.get('plan', 'Pro')}, {subs.get('days_remaining', 'N/A')} days remaining
-- Performance (30d): {perf.get('views', 0)} views, {perf.get('calls', 0)} calls, {perf.get('directions', 0)} directions
-- CTR: {ctr_note}
-- 7d delta: views {delta.get('views_pct', 0):+.0%}, calls {delta.get('calls_pct', 0):+.0%}
-- Lapsed customers: {cust_agg.get('lapsed', cust_agg.get('lapsed_count', 78))} (>{cust_agg.get('lapse_days', 180)} days)
+
+PERFORMANCE (30 days):
+- Views: {perf.get('views', 0)}, Calls: {perf.get('calls', 0)}, Directions: {perf.get('directions', 0)}
+- {ctr_note}
+- 7-day delta: views {delta.get('views_pct', 0):+.0%}, calls {delta.get('calls_pct', 0):+.0%}
+
+CUSTOMER AGGREGATE:
 - Total unique YTD: {cust_agg.get('total_unique_ytd', 'N/A')}
-- Signals: {signals_str}
-- Review themes: {review_str}
-- Last 3 Vera messages (DO NOT REPEAT): {last_msg_str}
+- Lapsed 180d+: {cust_agg.get('lapsed_180d_plus', cust_agg.get('lapsed', 'N/A'))}
+- High-risk adult count: {cust_agg.get('high_risk_adult_count', 'N/A')}
+- Retention 6mo: {cust_agg.get('retention_6mo_pct', 'N/A')}
+- Active members: {cust_agg.get('active_members', cust_agg.get('active_count', 'N/A'))}
+
+SIGNALS: {signals_str}
 
 TRIGGER:
-- Kind: {trigger_kind}
+- Kind: {trigger.get('kind', '')}
 - Urgency: {trigger.get('urgency', 2)}/5
-- Top item: {top_item}
 - Scope: {trigger.get('scope', 'merchant')}
-{digest_str}
-{seasonal_str}
-{cust_str}
+- Suppression key: {trigger.get('suppression_key', '')}
+{digest_block}
+
+DO NOT REPEAT THESE RECENT MESSAGES: {last_str}
+{cust_block}
 """.strip()
 
-# ── Build the system prompt per trigger kind ──────────────────────────
-def build_system_prompt(trigger_kind, category_slug, scope, language_instruction):
-    cat = CATEGORIES.get(category_slug, {})
-    voice = cat.get("voice", {})
-    taboos = voice.get("taboos", ["guaranteed", "100% safe", "AMAZING"])
-    taboos_str = ", ".join(f'"{t}"' for t in taboos[:5])
+# ── Build system prompt per trigger kind ─────────────────────────────
+def build_system_prompt(trigger_kind, category_slug, scope, lang_instruction):
+    voice_rules = CATEGORY_VOICE.get(category_slug, CATEGORY_VOICE["restaurants"])
+    taboos_str  = ", ".join(f'"{t}"' for t in voice_rules["taboos"])
+    vocab_str   = ", ".join(voice_rules["vocab"])
 
-    base = f"""You are Vera, magicpin's AI growth assistant for merchants.
-You compose WhatsApp messages to help merchants grow their business.
+    base = f"""You are Vera, magicpin's AI growth assistant for merchants in India.
+You write WhatsApp messages to help merchants grow — sent either TO the merchant (as Vera) or TO a customer (as the merchant, on their behalf).
 
-LANGUAGE: {language_instruction}
+LANGUAGE: {lang_instruction}
 
-CATEGORY VOICE ({category_slug}):
-- Tone: {voice.get('tone', 'professional and helpful')}
-- Taboo words (never use): {taboos_str}
-- Style: peer voice, not hype. Specific facts over adjectives.
+CATEGORY VOICE for {category_slug}:
+- Tone: {voice_rules['tone']}
+- Use vocabulary from: {vocab_str}
+- NEVER use: {taboos_str}
+- No URLs in the message body (Meta rejects them — hard penalty)
 
-ANTI-PATTERNS (judge will penalize these — avoid):
-- Generic offers ("Flat 30% off") — always use service+price ("Dental Cleaning @ ₹299")
-- Multiple CTAs — only ONE yes/no action per message
-- Long preambles ("I hope you're doing well...")
-- Re-introducing yourself after first message
-- Promotional tone ("AMAZING DEAL!") for clinical categories
-- Hallucinated data — only cite facts given in context
-- Repeating the last message verbatim
+WHAT THE JUDGE SCORES (each /10):
+1. Specificity — real numbers, dates, source citations from the context
+2. Category fit — correct vocabulary, tone, no overclaiming
+3. Merchant fit — owner name, locality, their actual data (CTR, member count, etc.)
+4. Trigger relevance — the trigger is THE reason for messaging, make it obvious
+5. Engagement compulsion — one strong reason to reply NOW, low-friction CTA
 
-COMPULSION LEVERS (use 1-2 per message):
-- Specificity: real numbers, dates, source citations
-- Loss aversion: "you're missing X", "before this window closes"
-- Social proof: "3 dentists in your locality did X this month"
-- Effort externalization: "I've drafted X — just say go"
-- Curiosity: "want to see who?" / "want the full breakdown?"
-- Single binary commitment: YES/NO or 1/2 — not multi-choice
+COMPULSION LEVERS (pick 1-2 per message):
+- Source citation: "JIDA Oct 2026, p.14" / "DCI circular" / "batch AT2024-1102"
+- Merchant-specific anchor: "your 124 high-risk adult patients" / "your 245 active members"
+- Reciprocity / effort externalization: "I'll pull it + draft the WhatsApp for you"
+- Loss aversion: "you're missing X" / "this window closes Y"
+- Curiosity: "worth a 2-min look?" / "want to see who?"
+- Single binary commit: "Reply YES" / "Reply 1 for Wed, 2 for Thu"
+
+HARD RULES (any violation is penalized):
+- Never fabricate numbers — only cite numbers from the context provided
+- Never put URLs in the message body
+- Never repeat a message already sent (check DO NOT REPEAT list)
+- One CTA maximum per message
+- Max ~4 sentences — be concise
+- Use owner first name, not generic "Hi there"
 """
 
     trigger_instructions = {
         "research_digest": """
-TRIGGER TASK: A new research/digest item just dropped relevant to this category.
-- Lead with the specific finding (stat, trial size, source)
-- Connect it to THIS merchant's patient/customer profile
-- Offer to do the work for them (draft content, pull abstract)
-- CTA: "Want me to pull it + draft a patient-ed WhatsApp you can share?"
+TASK — RESEARCH DIGEST:
+A new research/digest item landed. Your job:
+1. Open with: "[Owner], [Source] [issue] landed." — cite source precisely
+2. Anchor to THEIR specific patient/customer cohort from customer_aggregate
+3. Give the key stat (%, trial size, page number) — specificity is everything here
+4. Offer to do the work: "Want me to pull it + draft a patient-ed WhatsApp you can share?"
+5. End with source citation: "— [Source] [page ref]"
+
+EXAMPLE OUTPUT SHAPE (do NOT copy — write your own):
+"Dr. Meera, JIDA's Oct issue landed. One item relevant to your high-risk adult patients — 2,100-patient trial showed 3-month fluoride recall cuts caries recurrence 38% better than 6-month. Worth a look (2-min abstract). Want me to pull it + draft a patient-ed WhatsApp you can share? — JIDA Oct 2026 p.14"
 """,
-        "perf_spike": """
-TRIGGER TASK: This merchant's views/calls just spiked.
-- Lead with the spike number vs their average
-- Create urgency — this window won't last
-- Suggest a specific action to capture the traffic (run an offer, update listing)
-- CTA: One clear yes/no question
+        "regulation_change": """
+TASK — REGULATION / COMPLIANCE CHANGE:
+A regulatory update landed. Your job:
+1. Flag urgency appropriately (compliance = high urgency, information = medium)
+2. Cite the exact circular/batch/regulation reference
+3. Connect to their specific affected patient/customer count from context
+4. Offer end-to-end workflow: "Want me to draft X + Y?"
 """,
         "perf_dip": """
-TRIGGER TASK: This merchant's performance dropped this week.
-- Lead with the drop (be specific: views down X%, calls down Y%)
-- Compare to peer median to show the gap
-- Offer one concrete fix (flash deal, update offer, post content)
-- CTA: "Should I run a [specific offer] to recover this week?"
+TASK — PERFORMANCE DIP:
+The merchant's views/calls dropped. Your job:
+1. Name the exact numbers: "Your views are down X% and calls down Y% this week"
+2. Compare to peer median (e.g., "peer median is +Z%")
+3. Check if this is seasonal — if so, reframe it as normal (builds trust)
+4. Offer one concrete fix (flash deal, offer update, content post)
+5. Single yes/no CTA: "Should I run [specific offer] at ₹[price] to recover this week?"
+""",
+        "performance_dip": """
+TASK — PERFORMANCE DIP:
+The merchant's views/calls dropped. Your job:
+1. Name the exact numbers: "Your views are down X% and calls down Y% this week"
+2. Compare to peer median
+3. Offer one concrete recovery action
+4. Single yes/no CTA
+""",
+        "perf_spike": """
+TASK — PERFORMANCE SPIKE:
+Views/calls just jumped. Create urgency to capture the moment.
+1. "Your [metric] jumped X% this week — [locality] demand is up"
+2. Suggest ONE action to convert this traffic (run offer, update listing)
+3. Time-bound: "this window won't last past the weekend"
+4. Single yes/no CTA
 """,
         "recall_due": """
-TRIGGER TASK: A customer's recall window has opened (time for their next visit).
-- Address the customer by name
-- Mention specific time since last visit
-- Offer specific available slots with real times
-- Use the merchant's actual offer/price
-- CTA: "Reply 1 for [slot A], 2 for [slot B]" (booking flows allow multi-choice)
+TASK — CUSTOMER RECALL DUE:
+A customer's recall window opened. This message goes TO the customer (merchant_on_behalf).
+1. Address customer by name warmly, sign off as merchant's business
+2. State time since last visit (calculate from last_visit)
+3. Offer 2 specific slots with real times (derive from preferred_slots)
+4. Include real offer + price from merchant catalog
+5. Use hi-en mix if customer prefers Hindi
+6. CTA: "Reply 1 for [slot A], 2 for [slot B]"
+
+EXAMPLE SHAPE:
+"Hi Priya, Dr. Meera's clinic here 🦷 It's been 5 months since your last visit — your 6-month cleaning recall is due. Apke liye 2 slots ready hain: Wed 5 Nov, 6pm ya Thu 6 Nov, 5pm. ₹299 cleaning + complimentary fluoride. Reply 1 for Wed, 2 for Thu, or tell us a time that works."
 """,
         "customer_lapsed_soft": """
-TRIGGER TASK: A customer has lapsed and needs a gentle recall nudge.
-- Address the customer by name warmly
-- Reference their last visit naturally
-- Make returning easy with a specific offer
-- CTA: One easy action
+TASK — CUSTOMER LAPSED (SOFT):
+A customer hasn't returned in a while. This message goes TO the customer (merchant_on_behalf).
+1. Warm, no-shame opening — "happens to most of us"
+2. Address by name, sign as owner first name + business name
+3. Reference their past service/goal (from services_received or relationship)
+4. Offer something specific (new class/service/offer matching their goal)
+5. No-commitment CTA: "Reply YES — no commitment"
 """,
-        "dormant_with_vera": """
-TRIGGER TASK: Merchant hasn't replied to Vera in 14+ days.
-- Don't re-pitch — ask a curious question instead
-- Use a knowledge/insight angle ("did you know X about your category this week?")
-- Make it easy to re-engage with a simple curiosity CTA
-- CTA: "Want to see?" or "Worth 2 mins?"
-""",
-        "review_theme_emerged": """
-TRIGGER TASK: A pattern emerged in recent reviews.
-- Name the theme (e.g., "wait time" mentioned 3x this week)
-- Offer a quick action to address or amplify it
-- CTA: One yes/no
+        "customer_lapsed_hard": """
+TASK — CUSTOMER LAPSED (HARD, 60+ days):
+1. Even warmer, no-judgment tone
+2. Reference specific time elapsed
+3. Offer a low-barrier re-entry (free trial spot, first-session discount)
+4. Explicit no-commitment reassurance
 """,
         "festival_upcoming": """
-TRIGGER TASK: A festival is coming up in a few days.
-- Name the festival and exact days away
-- Suggest a specific festival campaign with real offer
-- Mention how many merchants in their area are running campaigns
-- CTA: "Should I set this up for you?"
+TASK — FESTIVAL UPCOMING:
+1. Name the festival + exact days away
+2. Suggest a specific campaign using their active offer
+3. Add social proof if available: "X merchants in your area are running campaigns"
+4. CTA: "Should I set this up for you? — live in 10 min"
+""",
+        "seasonal_perf_dip": """
+TASK — SEASONAL DIP (expected):
+This dip is NORMAL. Build trust by reframing.
+1. Acknowledge the dip with exact numbers
+2. Explain it's normal: "every [category] in [region] sees -X to -Y% in this window"
+3. Recommend the RIGHT action for this season (save ad spend, focus retention)
+4. Offer a retention play instead of acquisition
+""",
+        "supply_alert": """
+TASK — SUPPLY / COMPLIANCE ALERT:
+Urgent compliance action needed.
+1. "Urgent:" opener with batch/circular reference
+2. Count of affected customers from customer_aggregate
+3. Risk framing: accurate but not alarming ("sub-potency, no safety risk")
+4. Offer complete workflow: "Want me to draft their WhatsApp note + the replacement-pickup workflow?"
+""",
+        "chronic_refill_due": """
+TASK — CHRONIC REFILL DUE:
+Customer's medicines are running out. Message goes TO customer (or their proxy).
+1. Name the medicines specifically (molecule names)
+2. State exact refill date
+3. Include price + savings clearly
+4. Two-channel CTA: "Reply CONFIRM to dispatch, or call [number] for changes"
+""",
+        "dormant_with_vera": """
+TASK — MERCHANT DORMANT (14+ days no reply):
+Do NOT re-pitch. Use a curiosity/insight angle.
+1. Ask one smart question about their business this week
+2. Offer to turn their answer into something useful (Google post, WhatsApp reply)
+3. Estimate effort: "Takes 5 min"
+4. CTA: one open question
+""",
+        "merchant_reply": """
+TASK — MERCHANT REPLIED:
+Respond naturally to continue the conversation.
+1. Acknowledge what they said
+2. Advance toward the next concrete action
+3. Keep it short — they're busy
+""",
+        "bridal_followup": """
+TASK — BRIDAL FOLLOWUP:
+Customer is a bride-to-be. Message goes TO customer (merchant_on_behalf).
+1. Count days to wedding (from wedding date)
+2. Reference their trial / last session
+3. Suggest the next logical step in bridal journey with price
+4. Honor preferred slot
+5. Single binary CTA
 """,
     }
 
     specific = trigger_instructions.get(
         trigger_kind,
-        "\nTRIGGER TASK: Compose a relevant, specific message based on the context provided.\n"
+        "\nTASK: Write a relevant, specific message based on the context. Use real numbers from context. One clear CTA.\n"
     )
 
+    scope_note = ""
     if scope == "customer":
-        specific += "\nIMPORTANT: This message goes FROM the merchant TO a customer. Use send_as=merchant_on_behalf. Address the customer by name. Sign off as the merchant's clinic/business.\n"
+        scope_note = "\nIMPORTANT: This message goes FROM the merchant TO a customer. Sign off as the merchant's business. Address the customer by name.\n"
 
-    return base + specific + "\nWrite ONLY the final message. No intro, no explanation, no quotes around it."
+    return base + specific + scope_note + "\nWrite ONLY the final message. No intro, no explanation, no quotes around it."
 
 # ── Call Gemini LLM ───────────────────────────────────────────────────
+GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+
 def call_llm(system_prompt, context_block):
-    full_prompt = f"{system_prompt}\n\n---\nCONTEXT:\n{context_block}\n---\nWrite the message now:"
+    full_prompt = (
+        f"{system_prompt}\n\n"
+        f"---\nCONTEXT (use ALL numbers below — do not invent):\n{context_block}\n---\n"
+        f"Write the message now:"
+    )
 
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
-
-    for model in models:
+    for model in GEMINI_MODELS:
         for attempt in range(2):
             try:
                 response = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
                     headers={"Content-Type": "application/json"},
-                    json={"contents": [{"parts": [{"text": full_prompt}]}]},
+                    json={"contents": [{"parts": [{"text": full_prompt}]}],
+                          "generationConfig": {"maxOutputTokens": 300, "temperature": 0.7}},
                     timeout=25
                 )
                 data = response.json()
@@ -363,143 +496,253 @@ def call_llm(system_prompt, context_block):
                     time.sleep(wait)
                     continue
 
-                if data.get("error", {}).get("code") == 404:
-                    print(f"Model {model} not found, trying next...")
+                if data.get("error", {}).get("code") in [404, 400]:
+                    print(f"Model {model} error: {data.get('error', {}).get('message', '')}")
                     break
 
                 text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                # Remove any accidental URL patterns
+                import re
+                text = re.sub(r'https?://\S+', '', text).strip()
                 return text
 
             except Exception as e:
-                print(f"Error with {model}: {e}")
+                print(f"LLM error with {model}: {e}")
                 break
 
     return None
 
+# ── Build smart fallback without LLM ─────────────────────────────────
+def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None, offer=None):
+    identity  = merchant.get("identity", {})
+    perf      = merchant.get("performance", {})
+    cust_agg  = merchant.get("customer_aggregate", {})
+    locality  = identity.get("locality", "your area")
+    owner     = identity.get("owner_first_name", "")
+    biz_name  = identity.get("name", "your business")
+    views     = perf.get("views", 0)
+    delta     = perf.get("delta_7d", {})
+    payload   = trigger.get("payload", {})
+
+    o_name  = offer_name(offer) if offer else "Special Offer"
+    o_price = offer_price(offer) if offer else ""
+    price_s = f"at ₹{o_price}" if o_price else ""
+
+    # Research digest fallback
+    if trigger_kind == "research_digest":
+        digest = get_digest_item(category_slug, payload.get("top_item_id", ""))
+        if digest:
+            title  = digest.get("title", "new research")
+            source = digest.get("source", "")
+            trial  = digest.get("trial_n", "")
+            trial_s = f"({trial}-patient trial) " if trial else ""
+            addr = f"Dr. {owner}" if category_slug == "dentists" and owner else (owner or biz_name)
+            cohort = cust_agg.get("high_risk_adult_count", "")
+            cohort_s = f" relevant to your {cohort} high-risk adult patients —" if cohort else " —"
+            return (f"{addr}, {source} landed.{cohort_s} {trial_s}{title}. "
+                    f"Want me to pull it + draft a patient-ed WhatsApp you can share?")
+
+    # Perf dip fallback
+    if trigger_kind in ("perf_dip", "performance_dip"):
+        vd = round(abs(delta.get("views_pct", 0.15)) * 100)
+        cd = round(abs(delta.get("calls_pct", 0.10)) * 100)
+        addr = owner or "there"
+        return (f"{addr}, your views are down {vd}% and calls down {cd}% this week. "
+                f"Should I run a flash deal on {o_name} {price_s} to recover?")
+
+    # Recall due fallback
+    if trigger_kind == "recall_due" and customer:
+        cname = customer.get("name", customer.get("first_name", "there"))
+        rel   = customer.get("relationship", {})
+        lv    = rel.get("last_visit", "")
+        return (f"Hi {cname}, {biz_name} here. "
+                f"{'It has been a while since your last visit' if not lv else f'Your last visit was {lv}'}. "
+                f"Book your next appointment — {o_name} {price_s}. Reply YES to confirm.")
+
+    # Generic fallback
+    addr = owner or "there"
+    return (f"{addr}, {views} people viewed your listing in {locality} this month. "
+            f"Should I run your {o_name} {price_s} to convert them?")
+
 # ── Main compose function ─────────────────────────────────────────────
 def compose(category, merchant, trigger, customer=None):
+
     category_slug = category.get("slug", category.get("category_slug", ""))
-    trigger_kind  = trigger.get("kind", "")
+    trigger_kind  = (trigger.get("kind") or "").lower()
     scope         = trigger.get("scope", "merchant")
 
-    # Check for auto-reply in conversation history
-    conv_hist = merchant.get("conversation_history", [])
-    if conv_hist:
-        last_merchant_msg = next(
-            (t.get("message", "") for t in reversed(conv_hist)
-             if t.get("role") == "merchant"),
-            ""
+    identity = merchant.get("identity", {})
+    name = identity.get("owner_first_name") or identity.get("name") or "there"
+
+    perf = merchant.get("performance", {})
+    ctr = perf.get("ctr")
+    views = perf.get("views", 0)
+
+    peer_ctr = category.get("peer_stats", {}).get("avg_ctr", 0.03)
+
+    # ---------- OFFER ----------
+    offer = pick_best_offer(merchant, trigger_kind, category_slug)
+    offer_name = offer.get("name", "Offer")
+    offer_price = offer.get("discounted_price")
+    offer_text = f"{offer_name} @ ₹{offer_price}" if offer_price else offer_name
+
+    # ---------- SIGNAL ----------
+    signal_line = ""
+    if ctr is not None and peer_ctr:
+        signal_line = f"Your CTR is {round(ctr*100,1)}% vs {round(peer_ctr*100,1)}% avg."
+
+    # =========================================================
+    # 🔥 1. RESEARCH DIGEST (STRICT — NO FALLBACK ALLOWED)
+    # =========================================================
+    if "research_digest" in trigger_kind:
+
+        digest = get_top_digest(category_slug)
+
+        if digest:
+            stat = digest.get("key_stat") or digest.get("summary", "")
+            source = digest.get("source", "study")
+
+            message = (
+                f"{name}, {signal_line}\n\n"
+                f"A {source} study shows {stat}.\n\n"
+                f"You already have {offer_text}. "
+                f"Want me to draft a patient WhatsApp using this insight?"
+            )
+
+            return {
+                "message": message.strip(),
+                "cta": "Want me to draft and send it now?",
+                "send_as_identity": "vera",
+                "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+                "rationale": "Used research digest signal + stat + merchant CTR + offer"
+            }
+
+    # =========================================================
+    # 🔥 2. PERFORMANCE DIP
+    # =========================================================
+    if "perf_dip" in trigger_kind:
+
+        message = (
+            f"{name}, your listing performance dropped this week.\n"
+            f"{signal_line}\n\n"
+            f"You already have {offer_text}. "
+            f"Want me to push this to recover conversions?"
         )
-        if is_auto_reply(last_merchant_msg):
-            trigger_kind = "auto_reply_detected"
 
-    # Build components
-    offer          = pick_best_offer(merchant, trigger_kind, category_slug)
-    lang_instr     = get_language_instruction(merchant)
-    system_prompt  = build_system_prompt(trigger_kind, category_slug, scope, lang_instr)
-    context_block  = build_context_block(category_slug, merchant, trigger, customer)
+        return {
+            "message": message.strip(),
+            "cta": "Want me to fix this now?",
+            "send_as_identity": "vera",
+            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+            "rationale": "Perf dip → recovery using offer"
+        }
 
-    # Call LLM
-    message = call_llm(system_prompt, context_block)
+    # =========================================================
+    # 🔥 3. PERFORMANCE SPIKE
+    # =========================================================
+    if "perf_spike" in trigger_kind:
 
-    # Fallback if LLM fails
-    if not message:
-        identity = merchant.get("identity", {})
-        locality = identity.get("locality", "your area")
-        perf     = merchant.get("performance", {})
-        views    = perf.get("views", 0)
-        o_name   = offer.get("name", "Special Offer") if offer else "Special Offer"
-        o_price  = offer.get("discounted_price", "") if offer else ""
-        price_str = f"@ ₹{o_price}" if o_price else ""
-        message  = (f"{views} people in {locality} viewed your listing this month. "
-                    f"Should I run your {o_name} {price_str} to convert them?")
+        message = (
+            f"{name}, your listing is getting strong traction.\n"
+            f"{views} people viewed it recently.\n\n"
+            f"Good time to convert demand.\n"
+            f"Want me to push your {offer_text} now?"
+        )
 
-    # Determine send_as
-    if scope == "customer":
-        send_as = "merchant_on_behalf"
-    elif trigger_kind in ("dormant_with_vera", "research_digest"):
-        send_as = "vera"
-    else:
-        send_as = "vera"
+        return {
+            "message": message.strip(),
+            "cta": "Want me to push this now?",
+            "send_as_identity": "vera",
+            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+            "rationale": "Spike → conversion push"
+        }
+
+    # =========================================================
+    # 🔥 4. CUSTOMER RECALL
+    # =========================================================
+    if "recall" in trigger_kind and customer:
+
+        cust_name = customer.get("name", "Customer")
+
+        message = (
+            f"{cust_name}, it's time for your next visit.\n\n"
+            f"We have {offer_text} available.\n"
+            f"Want me to book this for you?"
+        )
+
+        return {
+            "message": message.strip(),
+            "cta": "Reply YES and I’ll book it",
+            "send_as_identity": "merchant_on_behalf",
+            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+            "rationale": "Recall → timing + booking CTA"
+        }
+
+    # =========================================================
+    # 🔥 5. CONTROLLED FALLBACK (ONLY IF NOTHING MATCHES)
+    # =========================================================
+    message = (
+        f"{name}, {views} people viewed your listing this month.\n\n"
+        f"You already have {offer_text}. "
+        f"Want me to run this to convert them?"
+    )
+
+    if signal_line:
+        message = f"{name}, {signal_line}\n\n{message}"
 
     return {
-        "message":          message,
-        "cta":              message.split("?")[-2].strip() + "?" if "?" in message else message,
-        "send_as_identity": send_as,
-        "suppression_key":  trigger.get("suppression_key",
-                            f"{merchant.get('merchant_id')}:{trigger_kind}"),
-        "rationale": (
-            f"Trigger: {trigger_kind} (urgency {trigger.get('urgency',2)}). "
-            f"Scope: {scope}. "
-            f"Offer: {offer.get('name') if offer else 'none'}. "
-            f"Lang: {lang_instr[:30]}."
-        )
+        "message": message.strip(),
+        "cta": "Want me to set this up now?",
+        "send_as_identity": "vera",
+        "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+        "rationale": "Fallback using performance + offer"
     }
 
-# ── Test all trigger types ────────────────────────────────────────────
+# ── Quick test ────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    import os
-
-    # ── Use expanded dataset if available, else fall back to seeds ────
-# ── Detect correct base path ──────────────────────────────────────
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    if os.path.exists(os.path.join(script_dir, "expanded")):
-        base = os.path.join(script_dir, "expanded")
-    else:
-        base = script_dir
+    for base in ["expanded", "."]:
+        mp = os.path.join(script_dir, base, "merchants.json")
+        if not os.path.exists(mp):
+            mp = os.path.join(script_dir, "merchants_seed.json")
+        if os.path.exists(mp):
+            merchants = load_json_list(mp)
+            break
 
-    print(f"Using base path: {base}")
+    for base in ["expanded", "."]:
+        cp = os.path.join(script_dir, base, "customers.json")
+        if not os.path.exists(cp):
+            cp = os.path.join(script_dir, "customers_seed.json")
+        if os.path.exists(cp):
+            customers = load_json_list(cp)
+            break
 
-    # Load merchants
-    merchants_path = os.path.join(base, "merchants.json")
-    if not os.path.exists(merchants_path):
-        merchants_path = os.path.join(script_dir, "merchants_seed.json")
-    merchants = load_json_list(merchants_path)
+    for base in ["expanded", "."]:
+        tp = os.path.join(script_dir, base, "triggers.json")
+        if not os.path.exists(tp):
+            tp = os.path.join(script_dir, "triggers_seed.json")
+        if os.path.exists(tp):
+            triggers = load_json_list(tp)
+            break
 
-    # Load customers
-    customers_path = os.path.join(base, "customers.json")
-    if not os.path.exists(customers_path):
-        customers_path = os.path.join(script_dir, "customers_seed.json")
-    customers = load_json_list(customers_path)
-
-    # Load triggers
-    triggers_path = os.path.join(base, "triggers.json")
-    if not os.path.exists(triggers_path):
-        triggers_path = os.path.join(script_dir, "triggers_seed.json")
-    triggers = load_json_list(triggers_path)
-
-    # Load categories
-    cat_dir = os.path.join(base, "categories")
-    if not os.path.exists(cat_dir):
-        cat_dir = os.path.join(script_dir, "categories")
-    if os.path.exists(cat_dir):
-        for fname in os.listdir(cat_dir):
-            if fname.endswith(".json"):
-                key = fname.replace(".json", "")
-                with open(os.path.join(cat_dir, fname)) as f:
-                    CATEGORIES[key] = json.load(f)
-
-    print(f"Loaded from: {base}")
-    print(f"Merchants: {len(merchants)}")
-    print(f"Customers: {len(customers)}")
-    print(f"Triggers:  {len(triggers)}")
-    print(f"Categories: {list(CATEGORIES.keys())}")
+    print(f"Merchants: {len(merchants)}, Customers: {len(customers)}, Triggers: {len(triggers)}")
     print("=" * 60)
 
     merchant = merchants[0]
     customer = customers[0]
     category = {"slug": merchant.get("category_slug", "dentists")}
 
-    print(f"Merchant : {merchant.get('identity',{}).get('name','?')}")
+    print(f"Merchant : {merchant.get('identity', {}).get('name', '?')}")
     print(f"Category : {category['slug']}")
-    print("=" * 60)
 
     for i, trigger in enumerate(triggers[:3]):
-        print(f"\n--- Trigger {i+1}: {trigger.get('kind','?')} ---")
+        print(f"\n{'='*60}")
+        print(f"Trigger {i+1}: {trigger.get('kind', '?')}")
+        print(f"{'='*60}")
         result = compose(category, merchant, trigger, customer)
         print(f"MESSAGE:\n{result['message']}")
-        print(f"SEND AS: {result['send_as_identity']}")
+        print(f"\nSEND AS: {result['send_as_identity']}")
+        print(f"SUPPRESSION: {result['suppression_key']}")
         print(f"RATIONALE: {result['rationale']}")
-        print()
         time.sleep(3)

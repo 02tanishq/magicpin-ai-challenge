@@ -132,7 +132,7 @@ async def push_context(request: Request):
 
     scope      = raw.get("scope", "")
     context_id = raw.get("context_id") or raw.get("id","")
-    version = raw.get("version", int(time.time()))
+    version = int(raw.get("version", int(time.time())))
     payload    = raw.get("payload", raw)  # fallback: treat whole body as payload
 
     # Fallback: detect scope from payload shape
@@ -158,7 +158,7 @@ async def push_context(request: Request):
     if cur and cur["version"] >= version:
         return {"accepted": False, "reason": "stale_version", "current_version": cur["version"]}
 
-    contexts[key] = {"version": version, "payload": payload}
+    contexts[key] = {"version": int(version), "payload": payload}
 
     # Sync categories to CATEGORIES global
     if scope == "category":
@@ -331,7 +331,7 @@ async def reply(body: ReplyBody):
 
     if not merchant:
         merchant = {}
-        
+
     merchant.setdefault("identity", {"name": "Merchant"})
     merchant.setdefault("category_slug", "restaurants")
 
