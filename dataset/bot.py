@@ -7,11 +7,15 @@ Optimized against the 10 case studies in examples/case-studies.md
 import json
 import os
 import time
+import re
 import requests
 from datetime import datetime
 
 # ── API setup ─────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+# Debug on startup
+print(f"[bot.py] GEMINI_API_KEY loaded: length={len(GEMINI_API_KEY)}, prefix={GEMINI_API_KEY[:8] if GEMINI_API_KEY else 'EMPTY'}")
 
 # ── Category voice rules ──────────────────────────────────────────────
 # Derived from case studies — what the judge scores on
