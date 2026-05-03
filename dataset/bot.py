@@ -685,16 +685,14 @@ def compose(category, merchant, trigger, customer=None):
     if "dip" in trigger_kind:
         views_drop = abs(delta.get("views_pct", -0.2)) * 100
         calls_drop = abs(delta.get("calls_pct", -0.1)) * 100
-        ctr        = perf.get("ctr", 0) * 100
-        peer_ctr   = peer_ctr * 100
-
+        m_ctr      = perf.get("ctr", 0) * 100
+        p_ctr      = get_peer_stats(category_slug).get("avg_ctr", 0.03) * 100
         message = (
             f"{owner}, your views dropped {views_drop:.0f}% and calls {calls_drop:.0f}% this week. "
-            f"CTR is {ctr:.1f}% vs {peer_ctr:.1f}% peer average — you're losing conversions. "
+            f"CTR is {m_ctr:.1f}% vs {p_ctr:.1f}% peer average — you're losing conversions. "
             f"Running {o_name} at ₹{o_price} can recover this quickly. "
             f"Should I activate it now?"
         )
-
         return {
             "message": message,
             "cta": "yes_no",
@@ -728,42 +726,57 @@ def compose(category, merchant, trigger, customer=None):
     # 🔥 4. CUSTOMER RECALL (BEST SCORING)
     # -----------------------------
     if "recall" in trigger_kind and customer:
+
         cname = customer.get("name", "Customer")
+        cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
 
         if category_slug == "dentists":
-            action = "routine dental check"
-        elif category_slug == "salons":
-            action = "your next grooming session"
-        elif category_slug == "gyms":
-            action = "your fitness session"
-        elif category_slug == "restaurants":
-            action = "your next meal with us"
-        else:
-            action = "your next visit"
-
-        if cust_lang == "hi":
             message = (
-                f"Hi {cname}, {biz_name} se bol rahe hain. "
-                f"{action} ka time ho gaya hai.\n\n"
+                f"Hi {cname}, Dr. Meera’s clinic se bol rahe hain. "
+                f"Aapka dental check due hai.\n\n"
                 f"Humne 2 slots block kiye hain — Wed 6pm ya Thu 5pm. "
-                f"{o_name} sirf ₹{o_price}.\n\n"
+                f"Cleaning @ ₹299.\n\n"
                 f"Reply 1 ya 2 karke confirm karein."
             )
-        else:
+
+        elif category_slug == "salons":
             message = (
-                f"Hi {cname}, {biz_name} here. "
-                f"It’s time for {action}.\n\n"
-                f"We’ve kept 2 slots — Wed 6pm or Thu 5pm. "
-                f"{o_name} at ₹{o_price}.\n\n"
-                f"Reply 1 or 2 to confirm."
+                f"Hi {cname}, aapka next grooming session due hai ✨\n\n"
+                f"Is week evening slots fast fill ho rahe hain — "
+                f"Wed 6pm ya Thu 5pm available hai.\n\n"
+                f"Special offer @ ₹299. Book karna hai?"
             )
 
+        elif category_slug == "gyms":
+            message = (
+                f"Hi {cname}, aapka workout streak break ho gaya hai 💪\n\n"
+                f"Is week se restart karein? Evening slots open hain.\n\n"
+                f"Main aapke liye plan set kar du — karein?"
+            )
+
+        elif category_slug == "restaurants":
+            message = (
+                f"Hi {cname}, aapka favourite meal miss ho raha hai 😄\n\n"
+                f"Aaj evening me special offer chal raha hai.\n\n"
+                f"Table reserve kar du?"
+            )
+
+        elif category_slug == "pharmacies":
+            message = (
+                f"Hi {cname}, aapka refill due ho sakta hai.\n\n"
+                f"Delay se treatment impact ho sakta hai.\n\n"
+                f"Main aapka order place kar du?"
+           )
+
+        else:
+            message = f"Hi {cname}, your visit is due. Want me to book it?"
+
         return {
-            "message": message,
-            "cta": "multi_option",
+            "    message": message,
+            "cta": "open_ended",
             "send_as_identity": "merchant_on_behalf",
-            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
-            "rationale": "Recall → personal + slots + frictionless booking"
+            "suppression_key": f"{merchant.get('merchant_id')}:recall",
+            "rationale": "Recall → category-specific messaging"
         }
 
     # -----------------------------
