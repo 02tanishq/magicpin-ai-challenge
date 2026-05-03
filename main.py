@@ -189,7 +189,10 @@ async def tick(body: TickBody):
             continue
 
         merchant_id = trg.get("merchant_id")
-        if not merchant_id or merchant_id in used_merchants:
+        if not merchant_id:
+            continue
+        trigger_key = f"{merchant_id}:{trigger_kind}"
+        if trigger_key in used_merchants:
             continue
 
         merchant = get_payload("merchant", merchant_id)
@@ -234,7 +237,7 @@ async def tick(body: TickBody):
                 "rationale":       result.get("rationale", "")
             })
 
-            used_merchants.add(merchant_id)
+            used_merchants.add(f"{merchant_id}:{trigger_kind}")
             time.sleep(0.5)
 
         except Exception as e:
