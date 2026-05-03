@@ -331,20 +331,22 @@ async def reply(body: ReplyBody):
                           "we will get back", "we'll get back", "our team will",
                           "please leave a message", "currently unavailable"]
     if any(p in msg for p in auto_reply_phrases):
-        # Check if 3+ auto-replies in a row
-        hist = conversations.get(body.conversation_id, [])
-        recent = [t for t in hist[-6:] if t.get("from") == "merchant"]
-        if len(recent) >= 3:
+        if body.turn_number >= 4:
             return {
-                "action":       "wait",
-                "wait_seconds": 3600,
-                "rationale":    "3+ consecutive auto-replies detected — backing off 1 hour"
+                "action":    "end",
+                "rationale": "Auto-reply 3x in a row, no real reply. Closing."
             }
-        if len(recent) >= 2:
+        if body.turn_number >= 3:
             return {
                 "action":       "wait",
                 "wait_seconds": 86400,
                 "rationale":    "Same auto-reply twice — owner not at phone. Wait 24h."
+            }
+        if body.turn_number >= 2:
+            return {
+                "action":       "wait",
+                "wait_seconds": 300,
+                "rationale":    "Auto-reply detected — waiting 5 min before retry."
             }
         return {
             "action":    "send",
