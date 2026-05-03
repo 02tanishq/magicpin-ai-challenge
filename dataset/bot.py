@@ -629,6 +629,7 @@ def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None
 
 # ── Main compose function ─────────────────────────────────────────────
 def compose(category, merchant, trigger, customer=None):
+    cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
     category_slug = category.get("slug", category.get("category_slug", ""))
     trigger_kind  = (trigger.get("kind") or "").lower()
     scope         = trigger.get("scope", "merchant")
@@ -668,6 +669,7 @@ def compose(category, merchant, trigger, customer=None):
                 f"This could directly improve preventive outcomes in your clinic. "
                 f"Want me to pull the summary + draft a patient WhatsApp you can send?"
             )
+        
 
             return {
                 "message": message,
@@ -728,12 +730,33 @@ def compose(category, merchant, trigger, customer=None):
     if "recall" in trigger_kind and customer:
         cname = customer.get("name", "Customer")
 
-        message = (
-            f"Hi {cname}, {biz_name} here. "
-            f"It’s time for your routine check. "
-            f"We’ve kept 2 slots for you — Wed 6pm or Thu 5pm. "
-            f"{o_name} at ₹{o_price}. Reply 1 or 2 to confirm."
-        )
+        if category_slug == "dentists":
+            action = "routine dental check"
+        elif category_slug == "salons":
+            action = "your next grooming session"
+        elif category_slug == "gyms":
+            action = "your fitness session"
+        elif category_slug == "restaurants":
+            action = "your next meal with us"
+        else:
+            action = "your next visit"
+
+        if cust_lang == "hi":
+            message = (
+                f"Hi {cname}, {biz_name} se bol rahe hain. "
+                f"{action} ka time ho gaya hai.\n\n"
+                f"Humne 2 slots block kiye hain — Wed 6pm ya Thu 5pm. "
+                f"{o_name} sirf ₹{o_price}.\n\n"
+                f"Reply 1 ya 2 karke confirm karein."
+            )
+        else:
+            message = (
+                f"Hi {cname}, {biz_name} here. "
+                f"It’s time for {action}.\n\n"
+                f"We’ve kept 2 slots — Wed 6pm or Thu 5pm. "
+                f"{o_name} at ₹{o_price}.\n\n"
+                f"Reply 1 or 2 to confirm."
+            )
 
         return {
             "message": message,
