@@ -163,7 +163,13 @@ async def push_context(request: Request):
     scope      = raw.get("scope", "")
     context_id = raw.get("context_id") or raw.get("id","")
     version = int(raw.get("version", int(time.time())))
-    payload    = raw.get("payload", raw)  # fallback: treat whole body as payload
+    payload = raw.get("payload", raw)
+
+# If judge sends full category JSON directly as body
+    if not scope and "slug" in raw:
+        scope      = "category"
+        context_id = context_id or raw.get("slug", "")
+        payload    = raw
 
     # Fallback: detect scope from payload shape
     if not scope:
@@ -328,35 +334,23 @@ async def reply(body: ReplyBody):
         # Check if 3+ auto-replies in a row
         hist = conversations.get(body.conversation_id, [])
         recent = [t for t in hist[-6:] if t.get("from") == "merchant"]
-        if len(recent) == 1:
-            return {
-                "action": "send",
-                "body": "Looks like an auto-reply 😊 When you're back, just reply 'Yes' and I’ll continue.",
-                "cta": "binary_yes_no",
-                "rationale": "Detected auto-reply, prompting real user"
-            }
-
-        if len(recent) == 2:
-            return {
-                "action": "wait",
-                "wait_seconds": 3600,
-                "rationale": "Second auto-reply detected — waiting 1 hour"
-            }
-        if len(recent) >= 4:
-            return {
-                "action":    "end",
-                "rationale": "4 consecutive auto-replies — ending conversation to avoid spam"
-            }
         if len(recent) >= 3:
             return {
                 "action":       "wait",
                 "wait_seconds": 3600,
                 "rationale":    "3+ consecutive auto-replies detected — backing off 1 hour"
             }
+        if len(recent) >= 2:
+            return {
+                "action":       "wait",
+                "wait_seconds": 86400,
+                "rationale":    "Same auto-reply twice — owner not at phone. Wait 24h."
+            }
         return {
-            "action":       "wait",
-            "wait_seconds": 300,
-            "rationale":    "Auto-reply detected — waiting 5 min before retry"
+            "action":    "send",
+            "body":      "Looks like an auto-reply 😊 When you're back, just reply 'Yes' to continue.",
+            "cta":       "binary_yes_no",
+            "rationale": "First auto-reply detected — prompting real user"
         }
 
     # Normal reply → compose response
