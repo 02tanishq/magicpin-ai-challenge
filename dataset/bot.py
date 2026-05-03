@@ -858,33 +858,21 @@ def compose(category, merchant, trigger, customer=None):
             message = f"Hi {cname}, your visit is due. Want me to book it?"
 
         return {
-            "    message": message,
+            "message": message,
             "cta": "open_ended",
             "send_as_identity": "merchant_on_behalf",
             "suppression_key": f"{merchant.get('merchant_id')}:recall",
             "rationale": "Recall → category-specific messaging"
         }
 
-# -----------------------------
-    # 🔥 5. FALLBACK (SAFE HIGH SCORE)
-    # -----------------------------
-    views    = perf.get("views", 0)
-    m_ctr    = perf.get("ctr", 0)
-    p_ctr    = get_peer_stats(category_slug).get("avg_ctr", 0.03)
-    lost     = int(max((p_ctr - m_ctr) * views, 0))
-    message  = (
-        f"{owner}, {views} people in {locality} viewed your listing this month. "
-        f"Your CTR is {round(m_ctr*100,1)}% vs {round(p_ctr*100,1)}% peers — "
-        f"you're missing ~{lost} potential customers.\n\n"
-        f"You already have {o_name} at ₹{o_price}. "
-        f"Should I push this to recover those conversions this week?"
-    )
+# -# 🔥 5. FALLBACK — use smart trigger-specific fallback
+    fallback_msg = build_fallback(trigger_kind, category_slug, merchant, trigger, customer, offer)
     return {
-        "message": message,
-        "cta": "yes_no",
-        "send_as_identity": "vera",
-        "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
-        "rationale": "Fallback → safe conversion-focused message"
+        "message":          fallback_msg,
+        "cta":              "open_ended",
+        "send_as_identity": send_as if 'send_as' in dir() else "vera",
+        "suppression_key":  trigger.get("suppression_key", f"{merchant.get('merchant_id')}:{trigger_kind}"),
+        "rationale":        f"Smart fallback: {trigger_kind}, offer={o_name} @ Rs{o_price}"
     }
 
 # ── Quick test ────────────────────────────────────────────────────────
