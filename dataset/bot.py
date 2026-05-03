@@ -469,6 +469,8 @@ Customer is a bride-to-be. Message goes TO customer (merchant_on_behalf).
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
 def call_llm(system_prompt, context_block):
+
+    print(f"DEBUG: GEMINI_API_KEY length = {len(GEMINI_API_KEY)}, prefix = {GEMINI_API_KEY[:8] if GEMINI_API_KEY else 'EMPTY'}")
     full_prompt = (
         f"{system_prompt}\n\n"
         f"---\nCONTEXT (use ALL numbers below — do not invent):\n{context_block}\n---\n"
