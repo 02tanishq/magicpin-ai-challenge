@@ -104,7 +104,7 @@ async def healthz():
 # debug_endpoint
 @app.get("/v1/debug")
 async def debug():
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    key = os.environ.get("GEMINI_API_KEY", "")
     return {
         "key_set": bool(key),
         "key_length": len(key),
@@ -425,23 +425,16 @@ async def reset():
 @app.get("/v1/test-llm")
 async def test_llm():
     import requests as req
-    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    key = os.environ.get("GEMINI_API_KEY", "")
     try:
-       r = req.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
-            },
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 100,
-                "messages": [{"role": "user", "content": "Say hello in 5 words"}]
-            },
+        r = req.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}",
+            headers={"Content-Type": "application/json"},
+            json={"contents": [{"parts": [{"text": "Say hello in 5 words"}]}]},
             timeout=20
         )
-       
-       return {"status": r.status_code, "response": r.json()}
+        data = r.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"] if "candidates" in data else str(data)
+        return {"status": r.status_code, "response": text, "key_prefix": key[:8]}
     except Exception as e:
         return {"error": str(e)}
