@@ -654,7 +654,7 @@ def compose(category, merchant, trigger, customer=None):
                f"Want me to draft a patient WhatsApp using this insight?"
             )
 
-            return {
+           return {
                "message": message,
                "cta": "Want me to draft it now?",
                "send_as_identity": "vera",
