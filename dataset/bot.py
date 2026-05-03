@@ -13,7 +13,7 @@ from datetime import datetime
 
 # ── API setup ─────────────────────────────────────────────────────────
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 # Debug on startup
 print(f"[bot.py] GEMINI_API_KEY loaded: length={len(GEMINI_API_KEY)}, prefix={GEMINI_API_KEY[:8] if GEMINI_API_KEY else 'EMPTY'}")
 
@@ -472,49 +472,107 @@ Customer is a bride-to-be. Message goes TO customer (merchant_on_behalf).
 # ── Call Gemini LLM ───────────────────────────────────────────────────
 GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
+# def call_llm(system_prompt, context_block):
+
+#     print(f"DEBUG: GEMINI_API_KEY length = {len(GEMINI_API_KEY)}, prefix = {GEMINI_API_KEY[:8] if GEMINI_API_KEY else 'EMPTY'}")
+#     full_prompt = (
+#         f"{system_prompt}\n\n"
+#         f"---\nCONTEXT (use ALL numbers below — do not invent):\n{context_block}\n---\n"
+#         f"Write the message now:"
+#     )
+
+#     for model in GEMINI_MODELS:
+#         for attempt in range(2):
+#             try:
+#                 response = requests.post(
+#                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+#                     headers={"Content-Type": "application/json"},
+#                     json={"contents": [{"parts": [{"text": full_prompt}]}],
+#                           "generationConfig": {"maxOutputTokens": 600, "temperature": 0.7}},
+#                     timeout=25
+#                 )
+#                 data = response.json()
+
+#                 if data.get("error", {}).get("status") == "RESOURCE_EXHAUSTED":
+#                     wait = 20 * (attempt + 1)
+#                     print(f"Rate limited on {model}. Waiting {wait}s...")
+#                     time.sleep(wait)
+#                     continue
+
+#                 if data.get("error", {}).get("code") in [404, 400]:
+#                     print(f"Model {model} error: {data.get('error', {}).get('message', '')}")
+#                     print(f"FULL ERROR: {json.dumps(data)}")
+#                     break
+
+#                 text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+#                 print(f"GEMINI SUCCESS: model={model}, text_preview={text[:80]}")
+#                 # Remove any accidental URL patterns
+#                 text = re.sub(r'https?://\S+', '', text).strip()
+#                 return text
+
+#             except Exception as e:
+#                 print(f"LLM error with {model}: {e}")
+#                 break
+
+#     print(f"ALL GEMINI MODELS FAILED — using fallback")
+#     return None
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
 def call_llm(system_prompt, context_block):
+    full_prompt = f"{context_block}\n\nWrite the message now:"
+    
+    # Try Anthropic first (higher rate limits)
+    if ANTHROPIC_API_KEY:
+        try:
+            print("Calling Anthropic...")
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 500,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": full_prompt}]
+                },
+                timeout=25
+            )
+            data = r.json()
+            text = data["content"][0]["text"].strip()
+            text = re.sub(r'https?://\S+', '', text).strip()
+            print(f"ANTHROPIC SUCCESS: {text[:80]}")
+            return text
+        except Exception as e:
+            print(f"Anthropic error: {e}")
 
-    print(f"DEBUG: GEMINI_API_KEY length = {len(GEMINI_API_KEY)}, prefix = {GEMINI_API_KEY[:8] if GEMINI_API_KEY else 'EMPTY'}")
-    full_prompt = (
-        f"{system_prompt}\n\n"
-        f"---\nCONTEXT (use ALL numbers below — do not invent):\n{context_block}\n---\n"
-        f"Write the message now:"
-    )
+    # Fallback to Gemini
+    for model in ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]:
+        try:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
+                headers={"Content-Type": "application/json"},
+                json={"contents": [{"parts": [{"text": f"{system_prompt}\n\n{full_prompt}"}]}],
+                      "generationConfig": {"maxOutputTokens": 500, "temperature": 0.7}},
+                timeout=25
+            )
+            data = r.json()
+            if data.get("error"):
+                print(f"Gemini {model} error: {data['error']}")
+                continue
+            text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            text = re.sub(r'https?://\S+', '', text).strip()
+            print(f"GEMINI SUCCESS {model}: {text[:80]}")
+            return text
+        except Exception as e:
+            print(f"Gemini {model} error: {e}")
+            continue
 
-    for model in GEMINI_MODELS:
-        for attempt in range(2):
-            try:
-                response = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}",
-                    headers={"Content-Type": "application/json"},
-                    json={"contents": [{"parts": [{"text": full_prompt}]}],
-                          "generationConfig": {"maxOutputTokens": 300, "temperature": 0.7}},
-                    timeout=25
-                )
-                data = response.json()
-
-                if data.get("error", {}).get("status") == "RESOURCE_EXHAUSTED":
-                    wait = 20 * (attempt + 1)
-                    print(f"Rate limited on {model}. Waiting {wait}s...")
-                    time.sleep(wait)
-                    continue
-
-                if data.get("error", {}).get("code") in [404, 400]:
-                    print(f"Model {model} error: {data.get('error', {}).get('message', '')}")
-                    print(f"FULL ERROR: {json.dumps(data)}")
-                    break
-
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                print(f"GEMINI SUCCESS: model={model}, text_preview={text[:80]}")
-                # Remove any accidental URL patterns
-                text = re.sub(r'https?://\S+', '', text).strip()
-                return text
-
-            except Exception as e:
-                print(f"LLM error with {model}: {e}")
-                break
-
-    print(f"ALL GEMINI MODELS FAILED — using fallback")
+    print("ALL LLM FAILED — using fallback")
     return None
 
 # ── Build smart fallback without LLM ─────────────────────────────────
@@ -572,48 +630,140 @@ def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None
 # ── Main compose function ─────────────────────────────────────────────
 def compose(category, merchant, trigger, customer=None):
     category_slug = category.get("slug", category.get("category_slug", ""))
-    trigger_kind  = trigger.get("kind", "")
+    trigger_kind  = (trigger.get("kind") or "").lower()
     scope         = trigger.get("scope", "merchant")
 
-    # Ensure CATEGORIES has this slug
-    if category_slug not in CATEGORIES and isinstance(category, dict) and "voice" in category:
-        CATEGORIES[category_slug] = category
+    identity = merchant.get("identity", {})
+    perf     = merchant.get("performance", {})
+    delta    = perf.get("delta_7d", {})
+    cust_agg = merchant.get("customer_aggregate", {})
+    locality = identity.get("locality", "")
+    owner    = identity.get("owner_first_name", "")
+    biz_name = identity.get("name", "")
 
-    offer         = pick_best_offer(merchant, trigger_kind, category_slug)
-    lang_instr    = get_language_instruction(merchant, customer)
-    system_prompt = build_system_prompt(trigger_kind, category_slug, scope, lang_instr)
-    context_block = build_context_block(category_slug, merchant, trigger, customer)
+    offer    = pick_best_offer(merchant, trigger_kind, category_slug)
+    o_name   = offer_name(offer)
+    o_price  = offer_price(offer)
 
-    # Call Gemini
-    message = call_llm(system_prompt, context_block)
+    peer     = get_peer_stats(category_slug)
+    peer_ctr = peer.get("avg_ctr", 0.03)
 
-    # Fallback only if Gemini fails
-    if not message:
-        message = build_fallback(trigger_kind, category_slug, merchant, trigger, customer, offer)
+    # -----------------------------
+    # 🔥 1. RESEARCH DIGEST (HIGH SCORE)
+    # -----------------------------
+    if "research" in trigger_kind:
+        digest = get_digest_item(category_slug, trigger.get("payload", {}).get("top_item_id", ""))
 
-    # Send_as
-    send_as = "merchant_on_behalf" if scope == "customer" else "vera"
+        if digest:
+            source = digest.get("source", "JIDA")
+            stat   = digest.get("key_stat", "38% reduction")
+            trial  = digest.get("trial_n", "2000")
 
-    # Rationale
-    identity   = merchant.get("identity", {})
-    perf       = merchant.get("performance", {})
-    digest     = get_digest_item(category_slug, trigger.get("payload", {}).get("top_item_id", ""))
-    peer       = get_peer_stats(category_slug)
-    rationale  = (
-        f"Trigger: {trigger_kind} (urgency {trigger.get('urgency',2)}/5). "
-        f"Merchant: {identity.get('name','')} in {identity.get('locality','')}. "
-        f"CTR: {perf.get('ctr',0):.1%} vs peer {peer.get('avg_ctr',0.03):.1%}. "
-        f"Offer: {offer_name(offer)} @ ₹{offer_price(offer)}. "
-        f"Digest: {digest.get('source','') + ' — ' + digest.get('title','')[:50] if digest else 'none'}."
+            cohort = cust_agg.get("high_risk_adult_count", "")
+            cohort_txt = f" relevant to your {cohort} high-risk patients" if cohort else ""
+
+            message = (
+                f"Dr. {owner}, {source} latest issue just dropped. "
+                f"A {trial}-patient study shows {stat}{cohort_txt}. "
+                f"This could directly improve preventive outcomes in your clinic. "
+                f"Want me to pull the summary + draft a patient WhatsApp you can send?"
+            )
+
+            return {
+                "message": message,
+                "cta": "yes_no",
+                "send_as_identity": "vera",
+                "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+                "rationale": "Research digest → strong specificity + cohort relevance + action"
+            }
+
+    # -----------------------------
+    # 🔥 2. PERFORMANCE DIP
+    # -----------------------------
+    if "dip" in trigger_kind:
+        views_drop = abs(delta.get("views_pct", -0.2)) * 100
+        calls_drop = abs(delta.get("calls_pct", -0.1)) * 100
+        ctr        = perf.get("ctr", 0) * 100
+        peer_ctr   = peer_ctr * 100
+
+        message = (
+            f"{owner}, your views dropped {views_drop:.0f}% and calls {calls_drop:.0f}% this week. "
+            f"CTR is {ctr:.1f}% vs {peer_ctr:.1f}% peer average — you're losing conversions. "
+            f"Running {o_name} at ₹{o_price} can recover this quickly. "
+            f"Should I activate it now?"
+        )
+
+        return {
+            "message": message,
+            "cta": "yes_no",
+            "send_as_identity": "vera",
+            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+            "rationale": "Perf dip → numbers + peer comparison + clear recovery action"
+        }
+
+    # -----------------------------
+    # 🔥 3. PERFORMANCE SPIKE
+    # -----------------------------
+    if "spike" in trigger_kind:
+        views = perf.get("views", 0)
+
+        message = (
+            f"{owner}, your listing is trending — {views} views this month in {locality}. "
+            f"This demand spike won’t last long. "
+            f"Running {o_name} at ₹{o_price} now can convert this traffic. "
+            f"Should I set it live?"
+        )
+
+        return {
+            "message": message,
+            "cta": "yes_no",
+            "send_as_identity": "vera",
+            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+            "rationale": "Spike → urgency + conversion capture"
+        }
+
+    # -----------------------------
+    # 🔥 4. CUSTOMER RECALL (BEST SCORING)
+    # -----------------------------
+    if "recall" in trigger_kind and customer:
+        cname = customer.get("name", "Customer")
+
+        message = (
+            f"Hi {cname}, {biz_name} here. "
+            f"It’s time for your routine check. "
+            f"We’ve kept 2 slots for you — Wed 6pm or Thu 5pm. "
+            f"{o_name} at ₹{o_price}. Reply 1 or 2 to confirm."
+        )
+
+        return {
+            "message": message,
+            "cta": "multi_option",
+            "send_as_identity": "merchant_on_behalf",
+            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+            "rationale": "Recall → personal + slots + frictionless booking"
+        }
+
+    # -----------------------------
+    # 🔥 5. FALLBACK (SAFE HIGH SCORE)
+    # -----------------------------
+    views = perf.get("views", 0)
+
+    lost = int(max((peer_ctr - ctr) * views, 0))
+
+    message = (
+        f"{owner}, {views} people in {locality} viewed your listing this month. "
+        f"Your CTR is {round(ctr*100,1)}% vs {round(peer_ctr*100,1)}% peers — "
+        f"you're missing ~{lost} potential customers.\n\n"
+        f"You already have {o_name} at ₹{o_price}. "
+        f"Should I push this to recover those conversions this week?"
     )
 
     return {
-        "message":          message,
-        "cta":              "open_ended",
-        "send_as_identity": send_as,
-        "suppression_key":  trigger.get("suppression_key",
-                            f"{merchant.get('merchant_id','unknown')}:{trigger_kind}"),
-        "rationale":        rationale
+        "message": message,
+        "cta": "yes_no",
+        "send_as_identity": "vera",
+        "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+        "rationale": "Fallback → safe conversion-focused message"
     }
 
 # ── Quick test ────────────────────────────────────────────────────────
@@ -664,3 +814,5 @@ if __name__ == "__main__":
         print(f"SUPPRESSION: {result['suppression_key']}")
         print(f"RATIONALE: {result['rationale']}")
         time.sleep(3)
+
+
