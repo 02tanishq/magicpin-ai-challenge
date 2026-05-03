@@ -561,8 +561,43 @@ def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None
     return (f"{addr}, {views} people viewed your listing in {locality} this month. "
             f"Should I run your {o_name} {price_s} to convert them?")
 
+def decide_signal(category, merchant, trigger):
+    kind = (trigger.get("kind") or "").lower()
+
+    if "research_digest" in kind:
+        return {
+            "type": "research",
+            "priority": 10
+        }
+
+    if "perf_dip" in kind:
+        return {
+            "type": "performance_recovery",
+            "priority": 9
+        }
+
+    if "perf_spike" in kind:
+        return {
+            "type": "performance_conversion",
+            "priority": 8
+        }
+
+    if "recall" in kind:
+        return {
+            "type": "customer_recall",
+            "priority": 10
+        }
+
+    return {
+        "type": "fallback",
+        "priority": 1
+    }
+
+
 # ── Main compose function ─────────────────────────────────────────────
 def compose(category, merchant, trigger, customer=None):
+
+    decision = decide_signal(category, merchant, trigger)
 
     category_slug = category.get("slug", category.get("category_slug", ""))
     trigger_kind  = (trigger.get("kind") or "").lower()
@@ -591,27 +626,40 @@ def compose(category, merchant, trigger, customer=None):
     # =========================================================
     # 🔥 1. RESEARCH DIGEST (STRICT — NO FALLBACK ALLOWED)
     # =========================================================
-    if "research_digest" in trigger_kind:
+    if decision == "research":
 
-        digest = get_top_digest(category_slug)
+       digest = get_top_digest(category_slug)
 
-        if digest:
-            stat = digest.get("key_stat") or digest.get("summary", "")
-            source = digest.get("source", "study")
+       if digest:
+           stat = digest.get("key_stat") or digest.get("summary", "")
+           source = digest.get("source", "study")
 
-            message = (
-                f"{name}, {signal_line}\n\n"
-                f"A {source} study shows {stat}.\n\n"
-                f"You already have {offer_text}. "
-                f"Want me to draft a patient WhatsApp using this insight?"
+           offer = pick_best_offer(merchant, "research_digest", category_slug)
+           offer_name = offer.get("name", "Offer")
+           offer_price = offer.get("discounted_price", "")
+           offer_text = f"{offer_name} @ ₹{offer_price}" if offer_price else offer_name
+
+           perf = merchant.get("performance", {})
+           ctr = perf.get("ctr", 0)
+           peer_ctr = category.get("peer_stats", {}).get("avg_ctr", 0.03)
+
+           signal_line = f"Your CTR is {round(ctr*100,1)}% vs {round(peer_ctr*100,1)}% avg."
+
+           name = merchant.get("identity", {}).get("owner_first_name", "there")
+
+           message = (
+               f"{name}, {signal_line}\n\n"
+               f"A {source} study shows {stat}.\n\n"
+               f"You already have {offer_text}. "
+               f"Want me to draft a patient WhatsApp using this insight?"
             )
 
             return {
-                "message": message.strip(),
-                "cta": "Want me to draft and send it now?",
-                "send_as_identity": "vera",
-                "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
-                "rationale": "Used research digest signal + stat + merchant CTR + offer"
+               "message": message,
+               "cta": "Want me to draft it now?",
+               "send_as_identity": "vera",
+               "suppression_key": f"{merchant.get('merchant_id')}:research",
+               "rationale": "Used research digest correctly"
             }
 
     # =========================================================
