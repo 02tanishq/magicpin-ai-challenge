@@ -501,11 +501,11 @@ def call_llm(system_prompt, context_block):
 
                 if data.get("error", {}).get("code") in [404, 400]:
                     print(f"Model {model} error: {data.get('error', {}).get('message', '')}")
+                    print(f"FULL ERROR: {json.dumps(data)}")
                     break
 
                 text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
                 # Remove any accidental URL patterns
-                import re
                 text = re.sub(r'https?://\S+', '', text).strip()
                 return text
 
@@ -513,6 +513,7 @@ def call_llm(system_prompt, context_block):
                 print(f"LLM error with {model}: {e}")
                 break
 
+    print(f"ALL GEMINI MODELS FAILED — using fallback")
     return None
 
 # ── Build smart fallback without LLM ─────────────────────────────────
