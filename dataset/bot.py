@@ -594,7 +594,7 @@ def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None
 
     # Address
     if category_slug == "dentists" and owner:
-        addr = f"Dr. {owner}"
+        addr = f"Dr. {owner}" if not owner.lower().startswith("dr") else owner
     else:
         addr = owner or biz_name
 
