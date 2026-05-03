@@ -505,6 +505,7 @@ def call_llm(system_prompt, context_block):
                     break
 
                 text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                print(f"GEMINI SUCCESS: model={model}, text_preview={text[:80]}")
                 # Remove any accidental URL patterns
                 text = re.sub(r'https?://\S+', '', text).strip()
                 return text
