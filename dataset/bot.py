@@ -714,168 +714,215 @@ def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None
     )
 
 # ── Main compose function ─────────────────────────────────────────────
-def compose(category, merchant, trigger, customer=None):
-    cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
-    category_slug = category.get("slug", category.get("category_slug", ""))
-    trigger_kind  = (trigger.get("kind") or "").lower()
-    scope = trigger.get("scope", "merchant")
-    send_as = "merchant_on_behalf" if scope == "customer" else "vera"
+# def compose(category, merchant, trigger, customer=None):
+#     cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
+#     category_slug = category.get("slug", category.get("category_slug", ""))
+#     trigger_kind  = (trigger.get("kind") or "").lower()
+#     scope = trigger.get("scope", "merchant")
+#     send_as = "merchant_on_behalf" if scope == "customer" else "vera"
 
-    identity = merchant.get("identity", {})
-    perf     = merchant.get("performance", {})
-    delta    = perf.get("delta_7d", {})
-    cust_agg = merchant.get("customer_aggregate", {})
-    locality = identity.get("locality", "")
-    owner    = identity.get("owner_first_name", "")
-    biz_name = identity.get("name", "")
+#     identity = merchant.get("identity", {})
+#     perf     = merchant.get("performance", {})
+#     delta    = perf.get("delta_7d", {})
+#     cust_agg = merchant.get("customer_aggregate", {})
+#     locality = identity.get("locality", "")
+#     owner    = identity.get("owner_first_name", "")
+#     biz_name = identity.get("name", "")
 
-    offer    = pick_best_offer(merchant, trigger_kind, category_slug)
-    o_name   = offer_name(offer)
-    o_price  = offer_price(offer)
+#     offer    = pick_best_offer(merchant, trigger_kind, category_slug)
+#     o_name   = offer_name(offer)
+#     o_price  = offer_price(offer)
 
-    peer     = get_peer_stats(category_slug)
-    peer_ctr = peer.get("avg_ctr", 0.03)
+#     peer     = get_peer_stats(category_slug)
+#     peer_ctr = peer.get("avg_ctr", 0.03)
 
-    # -----------------------------
-    # 🔥 1. RESEARCH DIGEST (HIGH SCORE)
-    # -----------------------------
-    if "research" in trigger_kind:
-        digest = get_digest_item(category_slug, trigger.get("payload", {}).get("top_item_id", ""))
+#     # -----------------------------
+#     # 🔥 1. RESEARCH DIGEST (HIGH SCORE)
+#     # -----------------------------
+#     if "research" in trigger_kind:
+#         digest = get_digest_item(category_slug, trigger.get("payload", {}).get("top_item_id", ""))
 
-        if digest:
-            source = digest.get("source", "JIDA")
-            stat   = digest.get("key_stat", "38% reduction")
-            trial  = digest.get("trial_n", "2000")
+#         if digest:
+#             source = digest.get("source", "JIDA")
+#             stat   = digest.get("key_stat", "38% reduction")
+#             trial  = digest.get("trial_n", "2000")
 
-            cohort = cust_agg.get("high_risk_adult_count", "")
-            cohort_txt = f" relevant to your {cohort} high-risk patients" if cohort else ""
+#             cohort = cust_agg.get("high_risk_adult_count", "")
+#             cohort_txt = f" relevant to your {cohort} high-risk patients" if cohort else ""
 
-            message = (
-                f"Dr. {owner}, {source} latest issue just dropped. "
-                f"A {trial}-patient study shows {stat}{cohort_txt}. "
-                f"This could directly improve preventive outcomes in your clinic. "
-                f"Want me to pull the summary + draft a patient WhatsApp you can send?"
-            )
+#             message = (
+#                 f"Dr. {owner}, {source} latest issue just dropped. "
+#                 f"A {trial}-patient study shows {stat}{cohort_txt}. "
+#                 f"This could directly improve preventive outcomes in your clinic. "
+#                 f"Want me to pull the summary + draft a patient WhatsApp you can send?"
+#             )
         
 
-            return {
-                "message": message,
-                "cta": "yes_no",
-                "send_as_identity": send_as,
-                "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
-                "rationale": "Research digest → strong specificity + cohort relevance + action"
-            }
+#             return {
+#                 "message": message,
+#                 "cta": "yes_no",
+#                 "send_as_identity": send_as,
+#                 "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+#                 "rationale": "Research digest → strong specificity + cohort relevance + action"
+#             }
 
-    # -----------------------------
-    # 🔥 2. PERFORMANCE DIP
-    # -----------------------------
-    if "dip" in trigger_kind:
-        views_drop = abs(delta.get("views_pct", -0.2)) * 100
-        calls_drop = abs(delta.get("calls_pct", -0.1)) * 100
-        m_ctr      = perf.get("ctr", 0) * 100
-        p_ctr      = get_peer_stats(category_slug).get("avg_ctr", 0.03) * 100
-        message = (
-            f"{owner}, your views dropped {views_drop:.0f}% and calls {calls_drop:.0f}% this week. "
-            f"CTR is {m_ctr:.1f}% vs {p_ctr:.1f}% peer average — you're losing conversions. "
-            f"Running {o_name} at ₹{o_price} can recover this quickly. "
-            f"Should I activate it now?"
-        )
-        return {
-            "message": message,
-            "cta": "yes_no",
-            "send_as_identity": send_as,
-            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
-            "rationale": "Perf dip → numbers + peer comparison + clear recovery action"
-        }
+#     # -----------------------------
+#     # 🔥 2. PERFORMANCE DIP
+#     # -----------------------------
+#     if "dip" in trigger_kind:
+#         views_drop = abs(delta.get("views_pct", -0.2)) * 100
+#         calls_drop = abs(delta.get("calls_pct", -0.1)) * 100
+#         m_ctr      = perf.get("ctr", 0) * 100
+#         p_ctr      = get_peer_stats(category_slug).get("avg_ctr", 0.03) * 100
+#         message = (
+#             f"{owner}, your views dropped {views_drop:.0f}% and calls {calls_drop:.0f}% this week. "
+#             f"CTR is {m_ctr:.1f}% vs {p_ctr:.1f}% peer average — you're losing conversions. "
+#             f"Running {o_name} at ₹{o_price} can recover this quickly. "
+#             f"Should I activate it now?"
+#         )
+#         return {
+#             "message": message,
+#             "cta": "yes_no",
+#             "send_as_identity": send_as,
+#             "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+#             "rationale": "Perf dip → numbers + peer comparison + clear recovery action"
+#         }
 
-    # -----------------------------
-    # 🔥 3. PERFORMANCE SPIKE
-    # -----------------------------
-    if "spike" in trigger_kind:
-        views = perf.get("views", 0)
+#     # -----------------------------
+#     # 🔥 3. PERFORMANCE SPIKE
+#     # -----------------------------
+#     if "spike" in trigger_kind:
+#         views = perf.get("views", 0)
 
-        message = (
-            f"{owner}, your listing is trending — {views} views this month in {locality}. "
-            f"This demand spike won’t last long. "
-            f"Running {o_name} at ₹{o_price} now can convert this traffic. "
-            f"Should I set it live?"
-        )
+#         message = (
+#             f"{owner}, your listing is trending — {views} views this month in {locality}. "
+#             f"This demand spike won’t last long. "
+#             f"Running {o_name} at ₹{o_price} now can convert this traffic. "
+#             f"Should I set it live?"
+#         )
 
-        return {
-            "message": message,
-            "cta": "yes_no",
-            "send_as_identity": send_as,
-            "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
-            "rationale": "Spike → urgency + conversion capture"
-        }
+#         return {
+#             "message": message,
+#             "cta": "yes_no",
+#             "send_as_identity": send_as,
+#             "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
+#             "rationale": "Spike → urgency + conversion capture"
+#         }
 
-    # -----------------------------
-    # 🔥 4. CUSTOMER RECALL (BEST SCORING)
-    # -----------------------------
-    if "recall" in trigger_kind and customer:
+#     # -----------------------------
+#     # 🔥 4. CUSTOMER RECALL (BEST SCORING)
+#     # -----------------------------
+#     if "recall" in trigger_kind and customer:
 
-        cname = customer.get("name", "Customer")
-        cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
+#         cname = customer.get("name", "Customer")
+#         cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
 
-        if category_slug == "dentists":
-            message = (
-                f"Hi {cname}, Dr. Meera’s clinic se bol rahe hain. "
-                f"Aapka dental check due hai.\n\n"
-                f"Humne 2 slots block kiye hain — Wed 6pm ya Thu 5pm. "
-                f"Cleaning @ ₹299.\n\n"
-                f"Reply 1 ya 2 karke confirm karein."
-            )
+#         if category_slug == "dentists":
+#             message = (
+#                 f"Hi {cname}, Dr. Meera’s clinic se bol rahe hain. "
+#                 f"Aapka dental check due hai.\n\n"
+#                 f"Humne 2 slots block kiye hain — Wed 6pm ya Thu 5pm. "
+#                 f"Cleaning @ ₹299.\n\n"
+#                 f"Reply 1 ya 2 karke confirm karein."
+#             )
 
-        elif category_slug == "salons":
-            message = (
-                f"Hi {cname}, aapka next grooming session due hai ✨\n\n"
-                f"Is week evening slots fast fill ho rahe hain — "
-                f"Wed 6pm ya Thu 5pm available hai.\n\n"
-                f"Special offer @ ₹299. Book karna hai?"
-            )
+#         elif category_slug == "salons":
+#             message = (
+#                 f"Hi {cname}, aapka next grooming session due hai ✨\n\n"
+#                 f"Is week evening slots fast fill ho rahe hain — "
+#                 f"Wed 6pm ya Thu 5pm available hai.\n\n"
+#                 f"Special offer @ ₹299. Book karna hai?"
+#             )
 
-        elif category_slug == "gyms":
-            message = (
-                f"Hi {cname}, aapka workout streak break ho gaya hai 💪\n\n"
-                f"Is week se restart karein? Evening slots open hain.\n\n"
-                f"Main aapke liye plan set kar du — karein?"
-            )
+#         elif category_slug == "gyms":
+#             message = (
+#                 f"Hi {cname}, aapka workout streak break ho gaya hai 💪\n\n"
+#                 f"Is week se restart karein? Evening slots open hain.\n\n"
+#                 f"Main aapke liye plan set kar du — karein?"
+#             )
 
-        elif category_slug == "restaurants":
-            message = (
-                f"Hi {cname}, aapka favourite meal miss ho raha hai 😄\n\n"
-                f"Aaj evening me special offer chal raha hai.\n\n"
-                f"Table reserve kar du?"
-            )
+#         elif category_slug == "restaurants":
+#             message = (
+#                 f"Hi {cname}, aapka favourite meal miss ho raha hai 😄\n\n"
+#                 f"Aaj evening me special offer chal raha hai.\n\n"
+#                 f"Table reserve kar du?"
+#             )
 
-        elif category_slug == "pharmacies":
-            message = (
-                f"Hi {cname}, aapka refill due ho sakta hai.\n\n"
-                f"Delay se treatment impact ho sakta hai.\n\n"
-                f"Main aapka order place kar du?"
-           )
+#         elif category_slug == "pharmacies":
+#             message = (
+#                 f"Hi {cname}, aapka refill due ho sakta hai.\n\n"
+#                 f"Delay se treatment impact ho sakta hai.\n\n"
+#                 f"Main aapka order place kar du?"
+#            )
 
-        else:
-            message = f"Hi {cname}, your visit is due. Want me to book it?"
+#         else:
+#             message = f"Hi {cname}, your visit is due. Want me to book it?"
 
-        return {
-            "message": message,
-            "cta": "open_ended",
-            "send_as_identity": "merchant_on_behalf",
-            "suppression_key": f"{merchant.get('merchant_id')}:recall",
-            "rationale": "Recall → category-specific messaging"
-        }
+#         return {
+#             "message": message,
+#             "cta": "open_ended",
+#             "send_as_identity": "merchant_on_behalf",
+#             "suppression_key": f"{merchant.get('merchant_id')}:recall",
+#             "rationale": "Recall → category-specific messaging"
+#         }
 
-# -# 🔥 5. FALLBACK — use smart trigger-specific fallback
-    fallback_msg = build_fallback(trigger_kind, category_slug, merchant, trigger, customer, offer)
+# # -# 🔥 5. FALLBACK — use smart trigger-specific fallback
+#     fallback_msg = build_fallback(trigger_kind, category_slug, merchant, trigger, customer, offer)
+#     return {
+#         "message":          fallback_msg,
+#         "cta":              "open_ended",
+#         "send_as_identity": send_as if 'send_as' in dir() else "vera",
+#         "suppression_key":  trigger.get("suppression_key", f"{merchant.get('merchant_id')}:{trigger_kind}"),
+#         "rationale":        f"Smart fallback: {trigger_kind}, offer={o_name} @ Rs{o_price}"
+#     }
+
+def compose(category, merchant, trigger, customer=None):
+    category_slug = category.get("slug", category.get("category_slug", ""))
+    trigger_kind  = trigger.get("kind", "")
+    scope         = trigger.get("scope", "merchant")
+    send_as       = "merchant_on_behalf" if scope == "customer" else "vera"
+
+    # Ensure category is in CATEGORIES
+    if category_slug not in CATEGORIES and isinstance(category, dict):
+        CATEGORIES[category_slug] = category
+
+    offer         = pick_best_offer(merchant, trigger_kind, category_slug)
+    lang_instr    = get_language_instruction(merchant, customer)
+    system_prompt = build_system_prompt(trigger_kind, category_slug, scope, lang_instr)
+    context_block = build_context_block(category_slug, merchant, trigger, customer)
+
+    # Try LLM first
+    message = call_llm(system_prompt, context_block)
+
+    # Smart fallback if LLM fails
+    if not message:
+        message = build_fallback(trigger_kind, category_slug, merchant, trigger, customer, offer)
+
+    identity  = merchant.get("identity", {})
+    perf      = merchant.get("performance", {})
+    digest    = get_digest_item(category_slug, trigger.get("payload", {}).get("top_item_id", ""))
+    peer      = get_peer_stats(category_slug)
+    m_ctr     = perf.get("ctr", 0)
+    p_ctr     = peer.get("avg_ctr", 0.03)
+    o_name    = offer_name(offer)
+    o_price   = offer_price(offer)
+
+    rationale = (
+        f"Trigger: {trigger_kind} (urgency {trigger.get('urgency', 2)}/5). "
+        f"Merchant: {identity.get('name', '')} in {identity.get('locality', '')}. "
+        f"CTR: {m_ctr:.1%} vs peer {p_ctr:.1%}. "
+        f"Offer: {o_name} @ Rs{o_price}. "
+        f"Digest: {digest.get('source', '') + ' — ' + digest.get('title', '')[:50] if digest else 'none'}."
+    )
+
     return {
-        "message":          fallback_msg,
+        "message":          message,
         "cta":              "open_ended",
-        "send_as_identity": send_as if 'send_as' in dir() else "vera",
-        "suppression_key":  trigger.get("suppression_key", f"{merchant.get('merchant_id')}:{trigger_kind}"),
-        "rationale":        f"Smart fallback: {trigger_kind}, offer={o_name} @ Rs{o_price}"
+        "send_as_identity": send_as,
+        "suppression_key":  trigger.get("suppression_key",
+                            f"{merchant.get('merchant_id', 'unknown')}:{trigger_kind}"),
+        "rationale":        rationale
     }
-
 # ── Quick test ────────────────────────────────────────────────────────
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
