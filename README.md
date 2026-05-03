@@ -1,5 +1,3 @@
-echo "# Vera Bot
-
 **Team:** Tanishq
 **Bot URL:** https://web-production-ad428.up.railway.app
 **Model:** gemini-2.5-flash
