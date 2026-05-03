@@ -101,26 +101,6 @@ async def healthz():
         "contexts_loaded": counts
     }
 
-@app.get("/v1/healthz")
-
-@app.get("/healthz")
-
-async def healthz():
-
-    counts = {s: sum(1 for (sc,_) in contexts if sc==s)
-
-              for s in ["category","merchant","customer","trigger"]}
-
-    return {
-
-        "status": "ok",
-
-        "uptime_seconds": int(time.time() - START),
-
-        "contexts_loaded": counts
-
-    }
-
 # debug_endpoint
 @app.get("/v1/debug")
 async def debug():
@@ -138,7 +118,7 @@ async def metadata():
     return {
         "team_name":    "Team Tanishq",
         "team_members": ["Tanishq"],
-        "model":        "claude-haiku-4-5-20251001",
+        "model":        "claude-3-haiku-20240307",
         "approach":     "4-context composer with trigger routing, Hinglish support, anti-repetition, auto-reply detection",
         "contact_email":"tanishq@example.com",
         "version":      "2.0.0",
@@ -163,7 +143,7 @@ async def push_context(request: Request):
 
     scope      = raw.get("scope", "")
     context_id = raw.get("context_id") or raw.get("id","")
-    version = int(raw.get("version", int(time.time())))
+    version = int(time.time())
     payload = raw.get("payload", raw)
 
 # If judge sends full category JSON directly as body
@@ -250,7 +230,7 @@ async def tick(body: TickBody):
             if not result.get("message"):
                 continue
 
-            conv_id = f"conv_{merchant_id}_{trg_id}_{int(time.time())}"
+            conv_id = f"conv_{uuid.uuid4().hex}"
             conversations[conv_id] = [{
                 "from": "vera",
                 "msg":  result["message"],
@@ -264,19 +244,14 @@ async def tick(body: TickBody):
                 "send_as":         result.get("send_as_identity", "vera"),
                 "trigger_id":      trg_id,
                 "template_name":   f"vera_{trg.get('kind','generic')}_v2",
-                "template_params": [
-                    merchant.get("identity", {}).get("name", "Merchant"),
-                    trg.get("kind", ""),
-                    result["message"][:80]
-                ],
+                "template_params": [],
                 "body":            result["message"],
-                "cta":             result.get("cta", "open_ended"),
+                "cta": "open_ended",
                 "suppression_key": result.get("suppression_key", trg.get("suppression_key", "")),
                 "rationale":       result.get("rationale", "")
             })
 
             used_merchants.add(f"{merchant_id}:{trigger_kind}")
-            time.sleep(0.5)
 
         except Exception as e:
             print(f"Tick error for {trg_id}: {e}")
@@ -416,11 +391,18 @@ async def reply(body: ReplyBody):
     })
     
     response_body =re.sub(r'https?://\S+', '',response_body)
+    cta = "open_ended"
+    rationale = ""
+
+    if 'result' in locals():
+        cta = result.get("cta", "open_ended")
+        rationale = result.get("rationale", "")
+
     return {
-        "action":    "send",
-        "body":      response_body.strip(),
-        "cta":       result.get("cta", "open_ended") if "result" in dir() else "open_ended",
-        "rationale": result.get("rationale", "") if "result" in dir() else ""
+        "action": "send",
+        "body": response_body.strip(),
+        "cta": cta,
+        "rationale": rationale
     }
 
 # ── Optional teardown ─────────────────────────────────────────────────
