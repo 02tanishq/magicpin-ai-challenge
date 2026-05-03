@@ -118,7 +118,7 @@ async def metadata():
     return {
         "team_name":    "Team Tanishq",
         "team_members": ["Tanishq"],
-        "model":        "claude-3-haiku-20240307",
+        "model": "gemini-2.5-flash",
         "approach":     "4-context composer with trigger routing, Hinglish support, anti-repetition, auto-reply detection",
         "contact_email":"tanishq@example.com",
         "version":      "2.0.0",
