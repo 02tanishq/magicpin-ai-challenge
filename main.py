@@ -432,3 +432,24 @@ async def teardown():
     contexts.clear()
     conversations.clear()
     return {"status": "wiped"}
+
+@app.post("/v1/reset")
+async def reset():
+    contexts.clear()
+    conversations.clear()
+    return {"status": "cleared"}
+
+@app.get("/v1/test-llm")
+async def test_llm():
+    import requests as req
+    key = os.environ.get("GEMINI_API_KEY", "")
+    try:
+        r = req.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}",
+            headers={"Content-Type": "application/json"},
+            json={"contents": [{"parts": [{"text": "Say hello in 5 words"}]}]},
+            timeout=20
+        )
+        return {"status": r.status_code, "response": r.json()}
+    except Exception as e:
+        return {"error": str(e)}
