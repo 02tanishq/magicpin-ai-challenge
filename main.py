@@ -200,62 +200,66 @@ async def tick(body: TickBody):
     actions = []
     used_merchants = set()
 
+    print("🔥 AVAILABLE TRIGGERS:", body.available_triggers)
+
     for trg_id in body.available_triggers[:20]:
         trg = get_payload("trigger", trg_id)
+        print("🔥 LOADED TRIGGER:", trg_id, trg)
+
         if not trg:
             continue
 
         merchant_id = trg.get("merchant_id")
         trigger_kind = trg.get("kind", "")
+
         if not merchant_id:
+            print("❌ Missing merchant_id")
             continue
-        trigger_key = f"{merchant_id}:{trigger_kind}"
-        if trigger_key in used_merchants:
+
+        if f"{merchant_id}:{trigger_kind}" in used_merchants:
+            print("❌ Skipping duplicate trigger")
             continue
 
         merchant = get_payload("merchant", merchant_id)
         if not merchant:
+            print("❌ Merchant not found")
             continue
 
         category_slug = merchant.get("category_slug", "")
         category = get_payload("category", category_slug) or {"slug": category_slug}
-        if "slug" not in category:
-            category["slug"] = category_slug
 
         customer_id = trg.get("customer_id")
         customer = get_payload("customer", customer_id) if customer_id else None
 
         try:
             result = compose(category, merchant, trg, customer)
-            if not result.get("message"):
+
+            print("🔥 COMPOSE RESULT:", result)
+
+            if not result or not result.get("message"):
+                print("❌ EMPTY MESSAGE")
                 continue
 
             conv_id = f"conv_{uuid.uuid4().hex}"
-            conversations[conv_id] = [{
-                "from": "vera",
-                "msg":  result["message"],
-                "at":   datetime.utcnow().isoformat()
-            }]
 
             actions.append({
                 "conversation_id": conv_id,
-                "merchant_id":     merchant_id,
-                "customer_id":     customer_id,
-                "send_as":         result.get("send_as_identity", "vera"),
-                "trigger_id":      trg_id,
-                "template_name":   f"vera_{trg.get('kind','generic')}_v2",
+                "merchant_id": merchant_id,
+                "customer_id": customer_id,
+                "send_as": result.get("send_as_identity", "vera"),
+                "trigger_id": trg_id,
+                "template_name": f"vera_{trigger_kind}_v2",
                 "template_params": [],
-                "body":            result["message"],
+                "body": result["message"],
                 "cta": "open_ended",
-                "suppression_key": result.get("suppression_key", trg.get("suppression_key", "")),
-                "rationale":       result.get("rationale", "")
+                "suppression_key": result.get("suppression_key", ""),
+                "rationale": result.get("rationale", "")
             })
 
             used_merchants.add(f"{merchant_id}:{trigger_kind}")
 
         except Exception as e:
-            print(f"Tick error for {trg_id}: {e}")
-            continue
+            print(f"❌ Tick error for {trg_id}: {e}")
 
     return {"actions": actions}
 
