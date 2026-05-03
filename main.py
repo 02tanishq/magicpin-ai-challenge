@@ -100,6 +100,36 @@ async def healthz():
         "contexts_loaded": counts
     }
 
+@app.get("/v1/healthz")
+
+@app.get("/healthz")
+
+async def healthz():
+
+    counts = {s: sum(1 for (sc,_) in contexts if sc==s)
+
+              for s in ["category","merchant","customer","trigger"]}
+
+    return {
+
+        "status": "ok",
+
+        "uptime_seconds": int(time.time() - START),
+
+        "contexts_loaded": counts
+
+    }
+
+# debug_endpoint
+@app.get("/v1/debug")
+async def debug():
+    key = os.environ.get("GEMINI_API_KEY", "")
+    return {
+        "key_set": bool(key),
+        "key_length": len(key),
+        "key_prefix": key[:8] if key else "MISSING"
+    }
+
 # ── 2. GET /v1/metadata ───────────────────────────────────────────────
 @app.get("/v1/metadata")
 @app.get("/metadata")
