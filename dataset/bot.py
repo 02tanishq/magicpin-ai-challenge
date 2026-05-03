@@ -718,7 +718,8 @@ def compose(category, merchant, trigger, customer=None):
     cust_lang = (customer or {}).get("preferences", {}).get("language", "en")
     category_slug = category.get("slug", category.get("category_slug", ""))
     trigger_kind  = (trigger.get("kind") or "").lower()
-    scope         = trigger.get("scope", "merchant")
+    scope = trigger.get("scope", "merchant")
+    send_as = "merchant_on_behalf" if scope == "customer" else "vera"
 
     identity = merchant.get("identity", {})
     perf     = merchant.get("performance", {})
@@ -760,7 +761,7 @@ def compose(category, merchant, trigger, customer=None):
             return {
                 "message": message,
                 "cta": "yes_no",
-                "send_as_identity": "vera",
+                "send_as_identity": send_as,
                 "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
                 "rationale": "Research digest → strong specificity + cohort relevance + action"
             }
@@ -782,7 +783,7 @@ def compose(category, merchant, trigger, customer=None):
         return {
             "message": message,
             "cta": "yes_no",
-            "send_as_identity": "vera",
+            "send_as_identity": send_as,
             "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
             "rationale": "Perf dip → numbers + peer comparison + clear recovery action"
         }
@@ -803,7 +804,7 @@ def compose(category, merchant, trigger, customer=None):
         return {
             "message": message,
             "cta": "yes_no",
-            "send_as_identity": "vera",
+            "send_as_identity": send_as,
             "suppression_key": f"{merchant.get('merchant_id')}:{trigger_kind}",
             "rationale": "Spike → urgency + conversion capture"
         }
