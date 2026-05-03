@@ -586,46 +586,132 @@ def build_fallback(trigger_kind, category_slug, merchant, trigger, customer=None
     views     = perf.get("views", 0)
     delta     = perf.get("delta_7d", {})
     payload   = trigger.get("payload", {})
+    m_ctr     = perf.get("ctr", 0)
+    p_ctr     = get_peer_stats(category_slug).get("avg_ctr", 0.03)
 
     o_name  = offer_name(offer) if offer else "Special Offer"
-    o_price = offer_price(offer) if offer else ""
-    price_s = f"at ₹{o_price}" if o_price else ""
+    o_price = offer_price(offer) if offer else "299"
 
-    # Research digest fallback
+    # Address
+    if category_slug == "dentists" and owner:
+        addr = f"Dr. {owner}"
+    else:
+        addr = owner or biz_name
+
+    # 1. Research digest
     if trigger_kind == "research_digest":
         digest = get_digest_item(category_slug, payload.get("top_item_id", ""))
         if digest:
-            title  = digest.get("title", "new research")
-            source = digest.get("source", "")
-            trial  = digest.get("trial_n", "")
-            trial_s = f"({trial}-patient trial) " if trial else ""
-            addr = f"Dr. {owner}" if category_slug == "dentists" and owner else (owner or biz_name)
-            cohort = cust_agg.get("high_risk_adult_count", "")
-            cohort_s = f" relevant to your {cohort} high-risk adult patients —" if cohort else " —"
-            return (f"{addr}, {source} landed.{cohort_s} {trial_s}{title}. "
-                    f"Want me to pull it + draft a patient-ed WhatsApp you can share?")
+            title   = digest.get("title", "new research")
+            source  = digest.get("source", "")
+            trial   = digest.get("trial_n", "")
+            cohort  = cust_agg.get("high_risk_adult_count", "")
+            trial_s = f"{trial}-patient trial showed " if trial else ""
+            cohort_s = f" relevant to your {cohort} high-risk patients —" if cohort else " —"
+            source_s = f" — {source}" if source else ""
+            return (
+                f"{addr}, new research just dropped{cohort_s} "
+                f"{trial_s}{title}. "
+                f"Want me to pull it + draft a patient WhatsApp you can share?{source_s}"
+            )
+        return (
+            f"{addr}, there's new clinical research relevant to your patients this week. "
+            f"Want me to pull the abstract + draft a patient-ed WhatsApp for you?"
+        )
 
-    # Perf dip fallback
-    if trigger_kind in ("perf_dip", "performance_dip"):
+    # 2. Perf dip
+    if "dip" in trigger_kind:
         vd = round(abs(delta.get("views_pct", 0.15)) * 100)
         cd = round(abs(delta.get("calls_pct", 0.10)) * 100)
-        addr = owner or "there"
-        return (f"{addr}, your views are down {vd}% and calls down {cd}% this week. "
-                f"Should I run a flash deal on {o_name} {price_s} to recover?")
+        return (
+            f"{addr}, your views dropped {vd}% and calls {cd}% this week. "
+            f"Should I run your {o_name} at ₹{o_price} to recover this?"
+        )
 
-    # Recall due fallback
+    # 3. Perf spike
+    if "spike" in trigger_kind:
+        return (
+            f"{addr}, your listing views jumped this week in {locality} — "
+            f"high demand right now. Should I push your {o_name} at ₹{o_price} to convert them?"
+        )
+
+    # 4. Recall due
     if trigger_kind == "recall_due" and customer:
-        cname = customer.get("name", customer.get("first_name", "there"))
+        cname = customer.get("name", "there")
         rel   = customer.get("relationship", {})
         lv    = rel.get("last_visit", "")
-        return (f"Hi {cname}, {biz_name} here. "
-                f"{'It has been a while since your last visit' if not lv else f'Your last visit was {lv}'}. "
-                f"Book your next appointment — {o_name} {price_s}. Reply YES to confirm.")
+        months_s = ""
+        if lv:
+            try:
+                from datetime import date
+                months = (date.today() - date.fromisoformat(lv)).days // 30
+                months_s = f"It's been {months} months since your last visit — "
+            except:
+                pass
+        return (
+            f"Hi {cname}, {biz_name} here 🦷 "
+            f"{months_s}your recall is due. "
+            f"Book your {o_name} at ₹{o_price}. "
+            f"Apke liye slots ready hain — reply 1 for Wed 6pm, 2 for Thu 5pm."
+        )
+
+    # 5. Customer lapsed
+    if "lapsed" in trigger_kind and customer:
+        cname    = customer.get("name", "there")
+        rel      = customer.get("relationship", {})
+        services = rel.get("services_received", [])
+        svc_s    = f" — we remember you loved {services[0]}" if services else ""
+        return (
+            f"Hi {cname}, {owner or biz_name} here 👋 "
+            f"It's been a while{svc_s}. No pressure — "
+            f"just wanted to share: {o_name} at ₹{o_price} this week. "
+            f"Reply YES — no commitment, no auto-charge."
+        )
+
+    # 6. Festival
+    if "festival" in trigger_kind:
+        festival = payload.get("festival_name", "the upcoming festival")
+        days     = payload.get("days_away", "")
+        days_s   = f" — {days} days away" if days else ""
+        return (
+            f"{addr}, {festival}{days_s}. "
+            f"Should I set up a {o_name} at ₹{o_price} campaign for you? Live in 10 min."
+        )
+
+    # 7. Bridal followup
+    if "bridal" in trigger_kind and customer:
+        cname   = customer.get("name", "there")
+        wdate   = customer.get("wedding_date", "")
+        days_s  = ""
+        if wdate:
+            try:
+                from datetime import date
+                days = (date.fromisoformat(wdate) - date.today()).days
+                days_s = f"{days} days to your wedding — "
+            except:
+                pass
+        return (
+            f"Hi {cname} 💍 {owner or biz_name} here. "
+            f"{days_s}perfect time to start your bridal prep. "
+            f"{o_name} at ₹{o_price} — "
+            f"want me to block your preferred slot for next week?"
+        )
+
+    # 8. Dormant
+    if "dormant" in trigger_kind:
+        return (
+            f"Hi {addr}! Quick question — what service has been most asked-for "
+            f"this week at {biz_name}? "
+            f"I'll turn the answer into a Google post + WhatsApp reply you can use. Takes 5 min."
+        )
 
     # Generic fallback
-    addr = owner or "there"
-    return (f"{addr}, {views} people viewed your listing in {locality} this month. "
-            f"Should I run your {o_name} {price_s} to convert them?")
+    lost = int(max((p_ctr - m_ctr) * views, 0))
+    return (
+        f"{addr}, {views} people in {locality} viewed your listing this month. "
+        f"CTR {m_ctr:.1%} vs peer {p_ctr:.1%} — ~{lost} missed customers. "
+        f"Should I run your {o_name} at ₹{o_price} to convert them?"
+    )
 
 # ── Main compose function ─────────────────────────────────────────────
 def compose(category, merchant, trigger, customer=None):
