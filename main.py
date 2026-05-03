@@ -189,6 +189,7 @@ async def tick(body: TickBody):
             continue
 
         merchant_id = trg.get("merchant_id")
+        trigger_kind = trg.get("kind", "")
         if not merchant_id:
             continue
         trigger_key = f"{merchant_id}:{trigger_kind}"
