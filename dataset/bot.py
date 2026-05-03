@@ -779,21 +779,20 @@ def compose(category, merchant, trigger, customer=None):
             "rationale": "Recall → category-specific messaging"
         }
 
-    # -----------------------------
+# -----------------------------
     # 🔥 5. FALLBACK (SAFE HIGH SCORE)
     # -----------------------------
-    views = perf.get("views", 0)
-
-    lost = int(max((peer_ctr - ctr) * views, 0))
-
-    message = (
+    views    = perf.get("views", 0)
+    m_ctr    = perf.get("ctr", 0)
+    p_ctr    = get_peer_stats(category_slug).get("avg_ctr", 0.03)
+    lost     = int(max((p_ctr - m_ctr) * views, 0))
+    message  = (
         f"{owner}, {views} people in {locality} viewed your listing this month. "
-        f"Your CTR is {round(ctr*100,1)}% vs {round(peer_ctr*100,1)}% peers — "
+        f"Your CTR is {round(m_ctr*100,1)}% vs {round(p_ctr*100,1)}% peers — "
         f"you're missing ~{lost} potential customers.\n\n"
         f"You already have {o_name} at ₹{o_price}. "
         f"Should I push this to recover those conversions this week?"
     )
-
     return {
         "message": message,
         "cta": "yes_no",
